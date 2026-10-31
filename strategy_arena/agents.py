@@ -13,24 +13,42 @@ from .ridge import Ridge
 class Agent:
     name = "agent"
     style = ""
+    square_off = False  # intraday: be flat at the close of every session's last bar
 
     def positions(self, df: pd.DataFrame) -> pd.Series:
         raise NotImplementedError
 
-    def trade(self, df: pd.DataFrame) -> tuple[pd.Series, pd.Series | None]:
+    def session_ends(self, df: pd.DataFrame) -> np.ndarray | None:
+        """Bars to square off on, or None when holding overnight (or on daily bars)."""
+        if not self.square_off or not ind.is_intraday(df.index):
+            return None
+        return ind.session_ends(df.index)
+
+    def raw_trade(self, df: pd.DataFrame) -> tuple[pd.Series, pd.Series | None]:
         """Positions plus, for agents that exit inside a bar, the exit price on those bars."""
         return self.positions(df), None
+
+    def trade(self, df: pd.DataFrame) -> tuple[pd.Series, pd.Series | None]:
+        pos, fills = self.raw_trade(df)
+        ends = self.session_ends(df)
+        if ends is not None:
+            pos = pos.where(~ends, 0.0)
+        return pos, fills
 
     def __repr__(self):
         return self.name
 
 
-def _hold_state(enter_long, exit_long, enter_short, exit_short) -> np.ndarray:
-    """Turn entry/exit conditions into a held position (+1/0/-1)."""
+def _hold_state(enter_long, exit_long, enter_short, exit_short, session_end=None) -> np.ndarray:
+    """Turn entry/exit conditions into a held position (+1/0/-1). On `session_end` bars the
+    position is closed and the state resets, so the next session needs a fresh entry."""
     n = len(enter_long)
     out = np.zeros(n)
     pos = 0.0
     for t in range(n):
+        if session_end is not None and session_end[t]:
+            pos = out[t] = 0.0
+            continue
         if pos == 0:
             if enter_long[t]:
                 pos = 1.0
@@ -98,7 +116,7 @@ class DonchianBreakout(Agent):
         lo_x = df.Low.rolling(self.exit).min().shift(1)
         c = df.Close
         held = _hold_state((c > hi_e).to_numpy(), (c < lo_x).to_numpy(),
-                           (c < lo_e).to_numpy(), (c > hi_x).to_numpy())
+                           (c < lo_e).to_numpy(), (c > hi_x).to_numpy(), self.session_ends(df))
         return pd.Series(held, index=df.index)
 
 
@@ -112,7 +130,7 @@ class RSIReversion(Agent):
     def positions(self, df):
         r = ind.rsi(df.Close, self.n)
         held = _hold_state((r < self.low).to_numpy(), (r > 50).to_numpy(),
-                           (r > self.high).to_numpy(), (r < 50).to_numpy())
+                           (r > self.high).to_numpy(), (r < 50).to_numpy(), self.session_ends(df))
         return pd.Series(held, index=df.index)
 
 
@@ -126,7 +144,7 @@ class BollingerReversion(Agent):
     def positions(self, df):
         z = ind.zscore(df.Close, self.n)
         held = _hold_state((z < -self.k).to_numpy(), (z > 0).to_numpy(),
-                           (z > self.k).to_numpy(), (z < 0).to_numpy())
+                           (z > self.k).to_numpy(), (z < 0).to_numpy(), self.session_ends(df))
         return pd.Series(held, index=df.index)
 
 
@@ -145,21 +163,26 @@ class LinRegTrend(Agent):
         return pd.Series(pos, index=df.index).fillna(0.0)
 
 
-def breakout_trail(close, high, low, upper, lower, exit_rule: str = "low") -> np.ndarray:
+def breakout_trail(close, high, low, upper, lower, exit_rule: str = "low", session_end=None) -> np.ndarray:
     """Enter long when a candle closes above `upper` after closing at or below it on the
     previous candle (short: closes below `lower`). Exit long when a candle closes below the
-    previous candle's low (exit_rule="low") or close (exit_rule="close"); shorts mirror it."""
+    previous candle's low (exit_rule="low") or close (exit_rule="close"); shorts mirror it.
+    An exit never flips straight into the opposite trade: entries need a later candle.
+    On `session_end` bars any position is squared off and no new trade opens."""
     if exit_rule not in ("low", "close"):
         raise ValueError("exit_rule must be 'low' or 'close'")
     n = len(close)
     out = np.zeros(n)
     pos = 0.0
     for t in range(1, n):
+        exited = False
         if pos > 0 and close[t] < (low[t - 1] if exit_rule == "low" else close[t - 1]):
-            pos = 0.0
+            pos, exited = 0.0, True
         elif pos < 0 and close[t] > (high[t - 1] if exit_rule == "low" else close[t - 1]):
+            pos, exited = 0.0, True
+        if session_end is not None and session_end[t]:
             pos = 0.0
-        if pos == 0:
+        elif pos == 0 and not exited:
             if close[t] > upper[t] and close[t - 1] <= upper[t - 1]:
                 pos = 1.0
             elif close[t] < lower[t] and close[t - 1] >= lower[t - 1]:
@@ -185,17 +208,19 @@ class EmaVwapBreakout(Agent):
         upper = both.max(axis=1, skipna=False).to_numpy()
         lower = both.min(axis=1, skipna=False).to_numpy()
         held = breakout_trail(df.Close.to_numpy(), df.High.to_numpy(), df.Low.to_numpy(), upper, lower,
-                              self.exit_rule)
+                              self.exit_rule, self.session_ends(df))
         return pd.Series(held, index=df.index)
 
 
-def pivot_trades(open_, high, low, close, ema, levels) -> tuple[np.ndarray, np.ndarray]:
+def pivot_trades(open_, high, low, close, ema, levels, session_end=None) -> tuple[np.ndarray, np.ndarray]:
     """Pivot breakout with an EMA filter.
 
     Long: a candle closes above a pivot level it was at or below on the previous close, and
     closes above the EMA. Target: the next pivot level above that close. Exit at the target
     the moment a candle's high reaches it (filled at the target, or at the open if the candle
-    gaps through it), or when a candle closes below the EMA. Shorts mirror it.
+    gaps through it), or when a candle closes below the EMA. Shorts mirror it. An exit never
+    flips into the opposite trade on the same candle; on `session_end` bars any position is
+    squared off at the close and no new trade opens.
     `levels` is an (n, k) array of pivot prices per bar. Returns (positions, fill prices).
     """
     n = len(close)
@@ -203,18 +228,21 @@ def pivot_trades(open_, high, low, close, ema, levels) -> tuple[np.ndarray, np.n
     fills = np.full(n, np.nan)
     pos, target = 0.0, np.nan
     for t in range(1, n):
+        exited = False
         if pos > 0:
             if high[t] >= target:
-                fills[t], pos = max(open_[t], target), 0.0
+                fills[t], pos, exited = max(open_[t], target), 0.0, True
             elif close[t] < ema[t]:
-                pos = 0.0
+                pos, exited = 0.0, True
         elif pos < 0:
             if low[t] <= target:
-                fills[t], pos = min(open_[t], target), 0.0
+                fills[t], pos, exited = min(open_[t], target), 0.0, True
             elif close[t] > ema[t]:
-                pos = 0.0
-        lv = levels[t][~np.isnan(levels[t])]
-        if pos == 0 and np.isnan(fills[t]) and len(lv) and not np.isnan(ema[t]):
+                pos, exited = 0.0, True
+        if session_end is not None and session_end[t]:
+            pos = 0.0
+        elif pos == 0 and not exited and not np.isnan(ema[t]):
+            lv = levels[t][~np.isnan(levels[t])]
             if ((close[t - 1] <= lv) & (lv < close[t])).any() and close[t] > ema[t]:
                 above = lv[lv > close[t]]
                 pos, target = 1.0, (above.min() if len(above) else np.inf)
@@ -235,15 +263,15 @@ class FibPivotEma(Agent):
         self.ema, self.period = ema, period
         self.name = f"Fib Pivot + EMA{ema}"
 
-    def trade(self, df):
+    def raw_trade(self, df):
         levels = ind.fib_pivots(df, self.period).to_numpy()
         e = ind.ema(df.Close, self.ema).to_numpy()
         pos, fills = pivot_trades(df.Open.to_numpy(), df.High.to_numpy(), df.Low.to_numpy(),
-                                  df.Close.to_numpy(), e, levels)
+                                  df.Close.to_numpy(), e, levels, self.session_ends(df))
         return pd.Series(pos, index=df.index), pd.Series(fills, index=df.index)
 
     def positions(self, df):
-        return self.trade(df)[0]
+        return self.raw_trade(df)[0]
 
 
 def forecast_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -294,8 +322,9 @@ class RidgeForecaster(Agent):
         return pd.Series(pos, index=df.index)
 
 
-def default_agents() -> list[Agent]:
-    return [
+def default_agents(square_off: bool = False) -> list[Agent]:
+    """All agents. `square_off` makes every agent flat at each intraday session's close."""
+    agents = [
         BuyAndHold(),
         SMACrossover(20, 50),
         Momentum(63),
@@ -308,3 +337,6 @@ def default_agents() -> list[Agent]:
         EmaVwapBreakout(50),
         FibPivotEma(9),
     ]
+    for a in agents:
+        a.square_off = square_off
+    return agents

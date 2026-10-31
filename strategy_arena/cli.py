@@ -24,10 +24,12 @@ def bar_defaults(df) -> dict:
     return {"round_len": 5 * k, "horizon": k, "step": max(1, k // 6)}
 
 
-def analyze(df, ticker, cost_bps=5.0, allow_short=False, horizon=None, step=None, round_len=None, allow_cash=True):
+def analyze(df, ticker, cost_bps=5.0, allow_short=False, horizon=None, step=None, round_len=None, allow_cash=True,
+            square_off=True):
+    """Run the tournament and the regression selector. `square_off` only affects intraday bars."""
     d = bar_defaults(df)
     horizon, step, round_len = horizon or d["horizon"], step or d["step"], round_len or d["round_len"]
-    agents = default_agents()
+    agents = default_agents(square_off)
     tour = run_tournament(df, agents, cost_bps, allow_short, round_len=round_len)
     sel = RegressionSelector(horizon=horizon, step=step, allow_cash=allow_cash).run(df, tour, cost_bps)
     return agents, tour, sel
@@ -53,6 +55,8 @@ def main(argv=None) -> int:
                                              "or a sixth of a session intraday)")
     p.add_argument("--round-len", type=int, help="bars per tournament round (default: 63 daily bars, "
                                                   "or 5 sessions intraday)")
+    p.add_argument("--hold-overnight", action="store_true",
+                   help="intraday: keep positions across sessions (default: square off at every session's close)")
     p.add_argument("--no-cash", action="store_true", help="selector must always pick an agent")
     p.add_argument("--json", help="also write a JSON report to this path (one ticker) or prefix (several)")
     args = p.parse_args(argv)
@@ -73,11 +77,12 @@ def main(argv=None) -> int:
         p.error("give at least one ticker, --csv PATH or --synthetic")
 
     for i, (ticker, df) in enumerate(jobs):
+        square_off = not args.hold_overnight
         agents, tour, sel = analyze(df, ticker, args.cost_bps, args.allow_short, args.horizon, args.step,
-                                    args.round_len, not args.no_cash)
+                                    args.round_len, not args.no_cash, square_off)
         if i:
             print("\n")
-        print(text_report(ticker, df, agents, tour, sel, args.cost_bps, args.allow_short))
+        print(text_report(ticker, df, agents, tour, sel, args.cost_bps, args.allow_short, square_off))
         if args.json:
             path = args.json if len(jobs) == 1 else f"{args.json}_{ticker}.json"
             with open(path, "w") as f:

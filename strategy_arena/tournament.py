@@ -45,7 +45,7 @@ def run_tournament(df: pd.DataFrame, agents: list[Agent], cost_bps: float = 5.0,
 
     rows = []
     for name, res in results.items():
-        m = metrics(res.returns.loc[start:], res.positions.loc[start:], bpy)
+        m = metrics(res.returns.loc[start:], res.positions.loc[start:], bpy, res.costs)
         m["agent"] = name
         m["rounds_won"] = int((ranks[name] == 1).sum())
         m["avg_rank"] = float(ranks[name].mean())

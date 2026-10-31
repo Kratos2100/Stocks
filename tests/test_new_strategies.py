@@ -60,6 +60,17 @@ class TestEmaVwapBreakout:
         # 8.4 stays under bar 2's high 8.5; 8.9 closes above bar 3's high 8.8 -> cover
         assert pos.tolist() == [0, -1, -1, -1, 0]
 
+    def test_exit_does_not_flip_to_short(self):
+        close = arr(9, 11, 9.5)  # bar 2 closes below bar 1's low and below both lines
+        pos = breakout_trail(close, close + 0.5, close - 0.4, np.full(3, 10.0), np.full(3, 10.0), "low")
+        assert pos.tolist() == [0, 1, 0]
+
+    def test_squares_off_at_session_end(self):
+        close = arr(9, 11, 12, 13, 14)
+        ends = np.array([False, False, True, False, False])
+        pos = breakout_trail(close, close + 0.5, close - 0.5, np.full(5, 10.0), np.full(5, 10.0), "low", ends)
+        assert pos.tolist() == [0, 1, 0, 0, 0]  # next day needs a fresh breakout above both lines
+
     def test_bad_exit_rule_is_rejected(self):
         with pytest.raises(ValueError):
             breakout_trail(arr(1, 2), arr(1, 2), arr(1, 2), arr(1, 1), arr(1, 1), "open")
@@ -93,10 +104,21 @@ class TestFibPivotEma:
         pos, fills = self.run(close, ema=arr(99, 99, 99, 101))
         assert pos.tolist() == [0, 1, 1, 0] and np.isnan(fills).all()
 
-    def test_close_below_ema_and_through_a_pivot_reverses_to_short(self):
-        close = arr(98, 101, 102, 98.5)  # last candle loses the EMA (99) and breaks the 100 pivot
-        pos, _ = self.run(close)
-        assert pos.tolist() == [0, 1, 1, -1]
+    def test_exit_does_not_flip_to_short(self):
+        close = arr(98, 101, 102, 98.5, 97)  # bar 3 loses the EMA (99) and breaks the 100 pivot
+        pos, _ = self.run(close, ema=np.full(5, 99.0))
+        assert pos.tolist() == [0, 1, 1, 0, 0]  # exit only; bar 4 crosses no pivot, so no short
+
+    def test_short_needs_a_fresh_breakdown_after_the_exit(self):
+        close = arr(98, 101, 102, 98.5, 94)  # bar 4 breaks the 95 pivot below the EMA
+        pos, _ = self.run(close, ema=np.full(5, 99.0))
+        assert pos.tolist() == [0, 1, 1, 0, -1]
+
+    def test_squares_off_at_session_end_and_waits_for_a_new_breakout(self):
+        close = arr(98, 101, 102, 103, 103.5)
+        ends = np.array([False, False, True, False, False])
+        pos, fills = pivot_trades(close, close + 0.5, close - 0.5, close, np.full(5, 99.0), self.levels[:5], ends)
+        assert pos.tolist() == [0, 1, 0, 0, 0]  # still above the EMA next day, but no fresh breakout
 
     def test_breakout_below_ema_is_ignored(self):
         pos, _ = self.run(arr(98, 101, 102), ema=np.full(3, 101.5))
@@ -194,3 +216,61 @@ def test_csv_with_timezone_keeps_exchange_time(tmp_path):
                     "2024-03-04 09:20:00+05:30,100.5,102,100,101.5,0\n")
     df = from_csv(str(path))
     assert df.index[0] == pd.Timestamp("2024-03-04 09:15")
+
+
+def test_sessions_split_on_trading_breaks_not_midnight():
+    from strategy_arena.indicators import bars_per_session, session_ends, session_ids
+
+    # CME-style 15-minute bars: 18:00 -> 17:00 with a one-hour halt, crossing midnight
+    idx = pd.date_range("2026-03-01 18:00", "2026-03-04 16:45", freq="15min")
+    idx = idx[idx.hour != 17]
+    assert len(np.unique(session_ids(idx))) == 3
+    assert bars_per_session(idx) == 92
+    assert [t.strftime("%m-%d %H:%M") for t in idx[session_ends(idx)]] == ["03-02 16:45", "03-03 16:45", "03-04 16:45"]
+    daily = pd.bdate_range("2024-01-01", periods=30)
+    assert bars_per_session(daily) == 1 and len(np.unique(session_ids(daily))) == 30
+
+
+def test_square_off_makes_every_agent_flat_overnight():
+    from strategy_arena.agents import default_agents
+    from strategy_arena.indicators import session_ends
+
+    df = synthetic_prices(78 * 10, seed=5, bars_per_day=78)
+    ends = session_ends(df.index)
+    for agent in default_agents(square_off=True):
+        pos, _ = agent.trade(df)
+        assert (pos[ends] == 0).all(), agent.name
+    held_overnight = [a.name for a in default_agents(square_off=False) if (a.trade(df)[0][ends] != 0).any()]
+    assert "Buy & Hold" in held_overnight
+
+
+def test_square_off_is_ignored_on_daily_bars():
+    from strategy_arena.agents import BuyAndHold
+
+    agent = BuyAndHold()
+    agent.square_off = True
+    assert (agent.trade(synthetic_prices(50))[0] == 1).all()
+
+
+def test_excess_tstat_detects_a_real_edge_only():
+    from strategy_arena.backtest import excess_tstat
+
+    rng = np.random.default_rng(0)
+    idx = pd.RangeIndex(2000)
+    b = pd.Series(rng.normal(0, 0.01, 2000), index=idx)
+    assert excess_tstat(b + 0.002 + rng.normal(0, 0.001, 2000), b, 20) > 5
+    assert abs(excess_tstat(b + rng.normal(0, 0.01, 2000), b, 20)) < 3
+    assert np.isnan(excess_tstat(b.iloc[:30], b.iloc[:30], 20))  # fewer than 3 blocks
+
+
+def test_intraday_report_warns_about_short_history_and_shows_costs():
+    from strategy_arena.report import text_report
+
+    df = synthetic_prices(78 * 40, seed=6, bars_per_day=78)
+    agents, tour, sel = analyze(df, "INTRA", cost_bps=2, allow_short=True)
+    text = text_report("INTRA", df, agents, tour, sel, 2, True, square_off=True)
+    assert "squared off at each session's last bar" in text
+    assert "WARNING: only" in text
+    assert "Costs" in text and "vs Buy & Hold t =" in text
+    assert (tour.leaderboard["costs"] >= 0).all()
+    assert tour.leaderboard.loc["Buy & Hold", "trades"] > 0  # re-buys every session when squaring off

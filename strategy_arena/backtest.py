@@ -15,6 +15,7 @@ class BacktestResult:
     positions: pd.Series  # target positions (decided at each close)
     equity: pd.Series     # growth of $1
     fills: pd.Series | None = None  # exit prices for exits inside a bar (e.g. a take-profit)
+    costs: pd.Series | None = None  # trading costs charged per bar, as a fraction of capital
 
 
 def periods_per_year(index: pd.DatetimeIndex) -> float:
@@ -38,11 +39,25 @@ def run_backtest(close: pd.Series, positions: pd.Series, cost_bps: float = 5.0,
     asset = (exit_px / close.shift(1) - 1).fillna(0.0)
     held = pos.shift(1).fillna(0.0)
     turnover = held.diff().abs().fillna(held.abs())
-    rets = held * asset - turnover * cost_bps / 1e4
-    return BacktestResult(rets, pos, (1 + rets).cumprod(), fills)
+    costs = turnover * cost_bps / 1e4
+    rets = held * asset - costs
+    return BacktestResult(rets, pos, (1 + rets).cumprod(), fills, costs)
 
 
-def metrics(returns: pd.Series, positions: pd.Series | None = None, bars_per_year: float = TRADING_DAYS) -> dict:
+def excess_tstat(a: pd.Series, b: pd.Series, block: int) -> float:
+    """t-statistic of strategy a's return over strategy b. Returns are summed in
+    non-overlapping blocks of `block` bars first, so autocorrelation does not inflate it."""
+    d = (a - b).dropna().to_numpy()
+    n = len(d) // max(block, 1)
+    if n < 3:
+        return float("nan")
+    sums = d[len(d) - n * block:].reshape(n, block).sum(axis=1)
+    sd = sums.std(ddof=1)
+    return float(sums.mean() / sd * np.sqrt(n)) if sd > 0 else float("nan")
+
+
+def metrics(returns: pd.Series, positions: pd.Series | None = None, bars_per_year: float = TRADING_DAYS,
+            costs: pd.Series | None = None) -> dict:
     r = returns.dropna()
     n = len(r)
     if n == 0:
@@ -69,4 +84,6 @@ def metrics(returns: pd.Series, positions: pd.Series | None = None, bars_per_yea
         p = positions.reindex(r.index).fillna(0.0)
         out["trades"] = int((p.diff().abs() > 0).sum())
         out["exposure"] = float((p != 0).mean())
+    if costs is not None:
+        out["costs"] = float(costs.reindex(r.index).fillna(0.0).sum())
     return out

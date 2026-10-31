@@ -47,9 +47,9 @@ Details of the two breakout agents:
   `EmaVwapBreakout(exit_rule="close")` exits on a close below the previous *close* instead.
 - **Fibonacci pivots** come from the previous session's high, low and close on intraday
   bars, and from the previous week on daily bars (`FibPivotEma(period="D" | "W" | "M")`):
-  P = (H + L + C) / 3, R/S 1-3 = P ± 0.382 / 0.618 / 1.0 × (H − L). Once a target fills,
-  the agent waits for the next candle before trading again. A close back through the EMA
-  that also breaks a pivot the other way reverses the position.
+  P = (H + L + C) / 3, R/S 1-3 = P ± 0.382 / 0.618 / 1.0 × (H − L).
+- **Exits never flip.** After any exit (trailing low, EMA or pivot target) the agent waits
+  for a fresh breakout on a later candle before trading again, in either direction.
 
 ### Options and futures
 
@@ -64,6 +64,12 @@ Details of the two breakout agents:
   continuous contract, e.g. `ES=F`). Option P&L does not: delta, time decay and implied
   volatility change it. Treat the result as the quality of the *direction signal*, not as
   options returns.
+- **Square-off:** on intraday data every agent is flat at the close of each session's last
+  bar. Agents that wait for an entry signal (breakouts, pivots, RSI, Bollinger, Donchian)
+  need a fresh signal the next session; always-in signals (SMA, MACD, momentum, Buy & Hold)
+  re-enter at the first bar's close if they still agree. Sessions are split on trading breaks,
+  so CME futures (18:00-17:00, across midnight) square off at the 17:00 halt and their VWAP
+  and pivots reset there too. Pass `--hold-overnight` to keep positions across sessions.
 - On intraday data the windows are counted in bars: rounds are 5 sessions, the
   regression predicts one session ahead and decides every sixth of a session (override
   with `--round-len`, `--horizon`, `--step`).
@@ -101,10 +107,15 @@ features that drive the pick.
 
 ### 4. The suggestion
 
-- If the selector earned trust walk-forward (positive rank IC and at least Buy & Hold's
-  Sharpe), the suggested strategy is its pick for the current regime.
-- Otherwise the suggestion falls back to the tournament champion by Sharpe, and the
-  report says why.
+- If the selector earned trust walk-forward, the suggested strategy is its pick for the
+  current regime. Trust needs a positive rank IC **and** a statistically significant edge
+  over Buy & Hold: a t-statistic of at least 2, computed on non-overlapping
+  horizon-length blocks so overlapping trades cannot inflate it.
+- Otherwise the suggestion falls back to the tournament champion by Sharpe, with its own
+  t-statistic against Buy & Hold, so a champion that only won by noise is labelled as such.
+- The leaderboard shows the actual return over the evaluated period next to CAGR, and the
+  total trading costs. With less than a year of data the report warns that annualized
+  numbers exaggerate and rankings are unreliable.
 
 This is a research tool, not financial advice: backtests ignore slippage beyond the cost
 setting, taxes and the fact that the past regimes may not repeat.

@@ -17,11 +17,12 @@ import numpy as np
 import pandas as pd
 
 from . import indicators as ind
-from .backtest import metrics, run_backtest
+from .backtest import excess_tstat, metrics, run_backtest
 from .ridge import Ridge, fit_ridge_cv
 from .tournament import Tournament
 
 CASH = "Cash"
+BUY_HOLD = "Buy & Hold"
 
 
 def market_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -153,14 +154,17 @@ class RegressionSelector:
                             fills=meta_fill)
 
         bpy = tour.bars_per_year
-        comp = {"Regression Selector": metrics(meta.returns.loc[first:], meta.positions.loc[first:], bpy)}
+        comp = {"Regression Selector": metrics(meta.returns.loc[first:], meta.positions.loc[first:], bpy, meta.costs)}
         for n in names:
             r = tour.results[n]
-            comp[n] = metrics(r.returns.loc[first:], r.positions.loc[first:], bpy)
+            comp[n] = metrics(r.returns.loc[first:], r.positions.loc[first:], bpy, r.costs)
         comparison = pd.DataFrame(comp).T.sort_values("sharpe", ascending=False)
         comparison.index.name = "strategy"
 
         diagnostics = self._diagnostics(picks)
+        if BUY_HOLD in tour.results:
+            diagnostics["tstat_vs_buy_hold"] = excess_tstat(
+                meta.returns.loc[first:], tour.results[BUY_HOLD].returns.loc[first:], H)
         picks = picks.drop(columns=["_pred", "_real"])
 
         # Final model: every sample whose outcome is known today, applied to today's regime.

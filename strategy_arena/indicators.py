@@ -50,15 +50,32 @@ def efficiency_ratio(close: pd.Series, n: int) -> pd.Series:
     return net / path.replace(0, np.nan)
 
 
-def bars_per_session(index: pd.DatetimeIndex) -> float:
-    """Median number of bars per calendar date: 1 for daily data, ~78 for 5-minute US stocks."""
-    if len(index) == 0:
-        return 1.0
-    return float(pd.Series(1, index=index).groupby(index.normalize()).size().median())
-
-
 def is_intraday(index: pd.DatetimeIndex) -> bool:
-    return bars_per_session(index) > 1
+    """True when bars are less than a day apart."""
+    return len(index) > 1 and pd.Series(index).diff().median() < pd.Timedelta(hours=20)
+
+
+def session_ids(index: pd.DatetimeIndex) -> np.ndarray:
+    """Number the trading sessions. A session starts after a break longer than the usual bar
+    spacing plus 30 minutes: the overnight close for NSE or US stocks, and the 17:00-18:00
+    daily halt for CME futures (whose sessions cross midnight). Daily bars: one per bar."""
+    if not is_intraday(index):
+        return np.arange(len(index))
+    gaps = pd.Series(index).diff()
+    return (gaps > gaps.median() + pd.Timedelta(minutes=30)).cumsum().to_numpy()
+
+
+def session_ends(index: pd.DatetimeIndex) -> np.ndarray:
+    """True on the last bar of every session (and on the final bar of the data)."""
+    ids = session_ids(index)
+    return np.append(ids[1:] != ids[:-1], True) if len(ids) else np.zeros(0, dtype=bool)
+
+
+def bars_per_session(index: pd.DatetimeIndex) -> float:
+    """Median number of bars per session: 1 for daily data, ~75 for 5-minute NSE bars."""
+    if not is_intraday(index):
+        return 1.0
+    return float(pd.Series(session_ids(index)).value_counts().median())
 
 
 def has_volume(df: pd.DataFrame) -> bool:
@@ -69,7 +86,7 @@ def has_volume(df: pd.DataFrame) -> bool:
 def vwap(df: pd.DataFrame, window: int = 20) -> pd.Series:
     """Volume-weighted average of the typical price (H+L+C)/3.
 
-    Intraday bars: the classic session VWAP, reset at the first bar of every date.
+    Intraday bars: the classic session VWAP, reset at the first bar of every session.
     Daily bars: a rolling VWAP over the last `window` bars (a daily session VWAP would be
     the bar itself). Without volume data every bar gets the same weight.
     """
@@ -77,8 +94,8 @@ def vwap(df: pd.DataFrame, window: int = 20) -> pd.Series:
     vol = df.Volume.fillna(0).clip(lower=0) if has_volume(df) else pd.Series(1.0, index=df.index)
     pv = tp * vol
     if is_intraday(df.index):
-        day = df.index.normalize()
-        num, den = pv.groupby(day).cumsum(), vol.groupby(day).cumsum()
+        session = session_ids(df.index)
+        num, den = pv.groupby(session).cumsum(), vol.groupby(session).cumsum()
     else:
         num, den = pv.rolling(window, min_periods=window).sum(), vol.rolling(window, min_periods=window).sum()
     return (num / den.replace(0, np.nan)).where(den > 0)
@@ -96,7 +113,7 @@ def fib_pivots(df: pd.DataFrame, period: str | None = None) -> pd.DataFrame:
     """
     if period is None:
         period = "D" if is_intraday(df.index) else "W"
-    key = df.index.normalize() if period == "D" else df.index.to_period(period)
+    key = session_ids(df.index) if period == "D" else df.index.to_period(period)
     g = df.groupby(key)
     prev = pd.DataFrame({"H": g.High.max(), "L": g.Low.min(), "C": g.Close.last()}).shift(1)
     p = (prev.H + prev.L + prev.C) / 3
