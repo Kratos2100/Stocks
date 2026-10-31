@@ -48,3 +48,63 @@ def efficiency_ratio(close: pd.Series, n: int) -> pd.Series:
     net = (close - close.shift(n)).abs()
     path = close.diff().abs().rolling(n, min_periods=n).sum()
     return net / path.replace(0, np.nan)
+
+
+def bars_per_session(index: pd.DatetimeIndex) -> float:
+    """Median number of bars per calendar date: 1 for daily data, ~78 for 5-minute US stocks."""
+    if len(index) == 0:
+        return 1.0
+    return float(pd.Series(1, index=index).groupby(index.normalize()).size().median())
+
+
+def is_intraday(index: pd.DatetimeIndex) -> bool:
+    return bars_per_session(index) > 1
+
+
+def has_volume(df: pd.DataFrame) -> bool:
+    """Indices (NIFTY, ^GSPC on intraday) often come with zero volume."""
+    return bool((df.Volume.fillna(0) > 0).mean() >= 0.5)
+
+
+def vwap(df: pd.DataFrame, window: int = 20) -> pd.Series:
+    """Volume-weighted average of the typical price (H+L+C)/3.
+
+    Intraday bars: the classic session VWAP, reset at the first bar of every date.
+    Daily bars: a rolling VWAP over the last `window` bars (a daily session VWAP would be
+    the bar itself). Without volume data every bar gets the same weight.
+    """
+    tp = (df.High + df.Low + df.Close) / 3
+    vol = df.Volume.fillna(0).clip(lower=0) if has_volume(df) else pd.Series(1.0, index=df.index)
+    pv = tp * vol
+    if is_intraday(df.index):
+        day = df.index.normalize()
+        num, den = pv.groupby(day).cumsum(), vol.groupby(day).cumsum()
+    else:
+        num, den = pv.rolling(window, min_periods=window).sum(), vol.rolling(window, min_periods=window).sum()
+    return (num / den.replace(0, np.nan)).where(den > 0)
+
+
+FIB_LEVELS = ["S3", "S2", "S1", "P", "R1", "R2", "R3"]
+
+
+def fib_pivots(df: pd.DataFrame, period: str | None = None) -> pd.DataFrame:
+    """Fibonacci pivot levels from the previous period's high, low and close.
+
+    P = (H + L + C) / 3, R/S n = P +/- {0.382, 0.618, 1.0} x (H - L).
+    `period` is "D" (previous session; the default for intraday bars), "W" (previous week;
+    the default for daily bars) or "M" (previous month).
+    """
+    if period is None:
+        period = "D" if is_intraday(df.index) else "W"
+    key = df.index.normalize() if period == "D" else df.index.to_period(period)
+    g = df.groupby(key)
+    prev = pd.DataFrame({"H": g.High.max(), "L": g.Low.min(), "C": g.Close.last()}).shift(1)
+    p = (prev.H + prev.L + prev.C) / 3
+    rng = prev.H - prev.L
+    levels = pd.DataFrame({
+        "S3": p - rng, "S2": p - 0.618 * rng, "S1": p - 0.382 * rng, "P": p,
+        "R1": p + 0.382 * rng, "R2": p + 0.618 * rng, "R3": p + rng,
+    })
+    out = levels.reindex(key)
+    out.index = df.index
+    return out[FIB_LEVELS]

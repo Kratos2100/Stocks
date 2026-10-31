@@ -17,6 +17,10 @@ class Agent:
     def positions(self, df: pd.DataFrame) -> pd.Series:
         raise NotImplementedError
 
+    def trade(self, df: pd.DataFrame) -> tuple[pd.Series, pd.Series | None]:
+        """Positions plus, for agents that exit inside a bar, the exit price on those bars."""
+        return self.positions(df), None
+
     def __repr__(self):
         return self.name
 
@@ -141,6 +145,107 @@ class LinRegTrend(Agent):
         return pd.Series(pos, index=df.index).fillna(0.0)
 
 
+def breakout_trail(close, high, low, upper, lower, exit_rule: str = "low") -> np.ndarray:
+    """Enter long when a candle closes above `upper` after closing at or below it on the
+    previous candle (short: closes below `lower`). Exit long when a candle closes below the
+    previous candle's low (exit_rule="low") or close (exit_rule="close"); shorts mirror it."""
+    if exit_rule not in ("low", "close"):
+        raise ValueError("exit_rule must be 'low' or 'close'")
+    n = len(close)
+    out = np.zeros(n)
+    pos = 0.0
+    for t in range(1, n):
+        if pos > 0 and close[t] < (low[t - 1] if exit_rule == "low" else close[t - 1]):
+            pos = 0.0
+        elif pos < 0 and close[t] > (high[t - 1] if exit_rule == "low" else close[t - 1]):
+            pos = 0.0
+        if pos == 0:
+            if close[t] > upper[t] and close[t - 1] <= upper[t - 1]:
+                pos = 1.0
+            elif close[t] < lower[t] and close[t - 1] >= lower[t - 1]:
+                pos = -1.0
+        out[t] = pos
+    return out
+
+
+class EmaVwapBreakout(Agent):
+    """Buy when a candle closes above BOTH the 50 EMA and VWAP (it was not above both on the
+    candle before); exit when a later candle closes below the previous candle's low.
+    Shorts mirror it: close below both, exit on a close above the previous candle's high."""
+    style = "EMA + VWAP breakout"
+
+    def __init__(self, ema=50, vwap_window=20, exit_rule="low"):
+        self.ema, self.vwap_window, self.exit_rule = ema, vwap_window, exit_rule
+        self.name = f"EMA{ema} + VWAP Breakout"
+
+    def positions(self, df):
+        e = ind.ema(df.Close, self.ema)
+        v = ind.vwap(df, self.vwap_window)
+        both = pd.concat([e, v], axis=1)
+        upper = both.max(axis=1, skipna=False).to_numpy()
+        lower = both.min(axis=1, skipna=False).to_numpy()
+        held = breakout_trail(df.Close.to_numpy(), df.High.to_numpy(), df.Low.to_numpy(), upper, lower,
+                              self.exit_rule)
+        return pd.Series(held, index=df.index)
+
+
+def pivot_trades(open_, high, low, close, ema, levels) -> tuple[np.ndarray, np.ndarray]:
+    """Pivot breakout with an EMA filter.
+
+    Long: a candle closes above a pivot level it was at or below on the previous close, and
+    closes above the EMA. Target: the next pivot level above that close. Exit at the target
+    the moment a candle's high reaches it (filled at the target, or at the open if the candle
+    gaps through it), or when a candle closes below the EMA. Shorts mirror it.
+    `levels` is an (n, k) array of pivot prices per bar. Returns (positions, fill prices).
+    """
+    n = len(close)
+    pos_out = np.zeros(n)
+    fills = np.full(n, np.nan)
+    pos, target = 0.0, np.nan
+    for t in range(1, n):
+        if pos > 0:
+            if high[t] >= target:
+                fills[t], pos = max(open_[t], target), 0.0
+            elif close[t] < ema[t]:
+                pos = 0.0
+        elif pos < 0:
+            if low[t] <= target:
+                fills[t], pos = min(open_[t], target), 0.0
+            elif close[t] > ema[t]:
+                pos = 0.0
+        lv = levels[t][~np.isnan(levels[t])]
+        if pos == 0 and np.isnan(fills[t]) and len(lv) and not np.isnan(ema[t]):
+            if ((close[t - 1] <= lv) & (lv < close[t])).any() and close[t] > ema[t]:
+                above = lv[lv > close[t]]
+                pos, target = 1.0, (above.min() if len(above) else np.inf)
+            elif ((close[t - 1] >= lv) & (lv > close[t])).any() and close[t] < ema[t]:
+                below = lv[lv < close[t]]
+                pos, target = -1.0, (below.max() if len(below) else -np.inf)
+        pos_out[t] = pos
+    return pos_out, fills
+
+
+class FibPivotEma(Agent):
+    """Fibonacci pivot breakout confirmed by the 9 EMA; exits at the next pivot or on a close
+    back through the EMA. Pivots come from the previous session on intraday bars and from
+    the previous week on daily bars (override with period="D", "W" or "M")."""
+    style = "pivot breakout"
+
+    def __init__(self, ema=9, period=None):
+        self.ema, self.period = ema, period
+        self.name = f"Fib Pivot + EMA{ema}"
+
+    def trade(self, df):
+        levels = ind.fib_pivots(df, self.period).to_numpy()
+        e = ind.ema(df.Close, self.ema).to_numpy()
+        pos, fills = pivot_trades(df.Open.to_numpy(), df.High.to_numpy(), df.Low.to_numpy(),
+                                  df.Close.to_numpy(), e, levels)
+        return pd.Series(pos, index=df.index), pd.Series(fills, index=df.index)
+
+    def positions(self, df):
+        return self.trade(df)[0]
+
+
 def forecast_features(df: pd.DataFrame) -> pd.DataFrame:
     c = df.Close
     lr = np.log(c).diff()
@@ -200,4 +305,6 @@ def default_agents() -> list[Agent]:
         BollingerReversion(20, 2.0),
         LinRegTrend(40),
         RidgeForecaster(),
+        EmaVwapBreakout(50),
+        FibPivotEma(9),
     ]

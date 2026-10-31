@@ -118,7 +118,10 @@ class RegressionSelector:
         H = self.horizon
         positions = {n: tour.results[n].positions for n in names}
 
+        fills = {n: tour.results[n].fills for n in names}
         rows, meta_pos = [], pd.Series(np.nan, index=df.index)
+        meta_fill = pd.Series(np.nan, index=df.index)
+        prev_choice = None
         for k, t in enumerate(dec):
             train = dec[dec + H <= t]  # forward window fully realized by day t
             if len(train) < self.min_train:
@@ -128,6 +131,11 @@ class RegressionSelector:
             choice = self._choose(pred)
             end = dec[k + 1] if k + 1 < len(dec) else len(df)
             meta_pos.iloc[t:end] = 0.0 if choice == CASH else positions[choice].iloc[t:end].to_numpy()
+            if choice != CASH and fills[choice] is not None:
+                # bar t still holds the previous pick's position, so its fill only applies if unchanged
+                lo = t if choice == prev_choice else t + 1
+                meta_fill.iloc[lo:end] = fills[choice].iloc[lo:end].to_numpy()
+            prev_choice = choice
             realized = fwd.iloc[t]
             rows.append({
                 "date": df.index[t], "choice": choice,
@@ -141,12 +149,14 @@ class RegressionSelector:
 
         picks = pd.DataFrame(rows).set_index("date")
         first = picks.index[0]
-        meta = run_backtest(df.Close, meta_pos.fillna(0.0), cost_bps, allow_short=True)  # already clipped
+        meta = run_backtest(df.Close, meta_pos.fillna(0.0), cost_bps, allow_short=True,  # already clipped
+                            fills=meta_fill)
 
-        comp = {"Regression Selector": metrics(meta.returns.loc[first:], meta.positions.loc[first:])}
+        bpy = tour.bars_per_year
+        comp = {"Regression Selector": metrics(meta.returns.loc[first:], meta.positions.loc[first:], bpy)}
         for n in names:
             r = tour.results[n]
-            comp[n] = metrics(r.returns.loc[first:], r.positions.loc[first:])
+            comp[n] = metrics(r.returns.loc[first:], r.positions.loc[first:], bpy)
         comparison = pd.DataFrame(comp).T.sort_values("sharpe", ascending=False)
         comparison.index.name = "strategy"
 

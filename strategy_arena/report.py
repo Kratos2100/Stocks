@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .agents import Agent
+from .indicators import bars_per_session, has_volume
 from .selector import CASH, SelectorReport
 from .tournament import Tournament
 
@@ -47,11 +48,16 @@ def suggested_strategy(tour: Tournament, sel: SelectorReport) -> tuple[str, str]
 
 def text_report(ticker: str, df: pd.DataFrame, agents: list[Agent], tour: Tournament, sel: SelectorReport,
                 cost_bps: float, allow_short: bool) -> str:
+    k = bars_per_session(df.index)
+    fmt = "%Y-%m-%d %H:%M" if k > 1 else "%Y-%m-%d"
+    bars = f"{len(df)} bars, ~{k:.0f} per session" if k > 1 else f"{len(df)} daily bars"
     out = []
     out.append(f"=== Strategy Arena: {ticker} ===")
-    out.append(f"Prices {df.index[0]:%Y-%m-%d} -> {df.index[-1]:%Y-%m-%d} ({len(df)} days). "
-               f"Evaluated from {tour.start:%Y-%m-%d}, cost {cost_bps:g} bps per unit traded, "
-               f"{'long/short' if allow_short else 'long/flat only'}.")
+    out.append(f"Prices {df.index[0]:{fmt}} -> {df.index[-1]:{fmt}} ({bars}). "
+               f"Evaluated from {tour.start:{fmt}}, cost {cost_bps:g} bps per unit traded, "
+               f"{'long/short' if allow_short else 'long/flat only (add --allow-short for futures/puts)'}.")
+    if not has_volume(df):
+        out.append("Note: no volume in this data (common for indices), so VWAP is an equal-weighted average price.")
     out.append("")
     out.append(f"--- Tournament leaderboard ({len(tour.rounds)} rounds) ---")
     out.append(_table(tour.leaderboard, {
@@ -60,8 +66,8 @@ def text_report(ticker: str, df: pd.DataFrame, agents: list[Agent], tour: Tourna
         "rounds_won": ("RoundsWon", "int"), "points": ("Points", "int")}))
     out.append("")
     d = sel.diagnostics
-    out.append(f"--- Regression selector, walk-forward from {sel.picks.index[0]:%Y-%m-%d} "
-               f"({d['decisions']} decisions, {sel.recommendation.horizon}-day horizon) ---")
+    out.append(f"--- Regression selector, walk-forward from {sel.picks.index[0]:{fmt}} "
+               f"({d['decisions']} decisions, {sel.recommendation.horizon}-bar horizon) ---")
     out.append(_table(sel.comparison, {
         "cagr": ("CAGR", "pct"), "sharpe": ("Sharpe", "num"), "max_drawdown": ("MaxDD", "pct"),
         "exposure": ("InMarket", "pct")}))
@@ -71,7 +77,7 @@ def text_report(ticker: str, df: pd.DataFrame, agents: list[Agent], tour: Tourna
     out.append(f"picks: {counts}")
     out.append("")
     rec = sel.recommendation
-    out.append(f"--- Regime forecast as of {rec.as_of:%Y-%m-%d}: predicted next {rec.horizon} days ---")
+    out.append(f"--- Regime forecast as of {rec.as_of:{fmt}}: predicted next {rec.horizon} bars ---")
     for name, v in rec.predicted.items():
         marker = " <- regression pick" if name == rec.agent else ""
         out.append(f"  {name:<22}{_pct(np.expm1(v))}{marker}")
@@ -94,12 +100,12 @@ def json_report(ticker: str, tour: Tournament, sel: SelectorReport) -> str:
     rec = sel.recommendation
     payload = {
         "ticker": ticker,
-        "as_of": f"{rec.as_of:%Y-%m-%d}",
+        "as_of": str(rec.as_of),
         "suggested_strategy": pick,
         "reason": why,
         "regression_pick": rec.agent,
         "predicted_forward_return": {k: float(np.expm1(v)) for k, v in rec.predicted.items()},
-        "horizon_days": rec.horizon,
+        "horizon_bars": rec.horizon,
         "drivers": [{"feature": f, "value": v, "contribution": c} for f, v, c in rec.drivers],
         "leaderboard": tour.leaderboard.reset_index().to_dict(orient="records"),
         "selector_comparison": sel.comparison.reset_index().to_dict(orient="records"),
