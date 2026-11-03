@@ -173,7 +173,14 @@ class GrowwClient:
             body = {}
         if body.get("status") == "FAILURE":
             err = body.get("error", {})
-            raise GrowwError(f"GET {path}: {err.get('code')} {err.get('message')}")
+            msg = f"GET {path}: {err.get('code')} {err.get('message')}"
+            if str(err.get("code")) == "403" or r.status_code == 403:
+                # Observed live: a valid token (``/user/detail`` -> 200) still gets 403
+                # "Access forbidden for this request." on every market-data endpoint when
+                # the account has no Trade API data subscription.
+                msg += (" (the access token was accepted; a 403 on data endpoints means this Groww "
+                        "account is not entitled to them - check the Trade API subscription on groww.in)")
+            raise GrowwError(msg)
         if r.status_code >= 400:
             raise GrowwError(f"GET {path} -> HTTP {r.status_code}: {getattr(r, 'text', '')[:300]}")
         if self.pause:

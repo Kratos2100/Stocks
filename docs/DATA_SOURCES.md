@@ -137,7 +137,14 @@ relying on the data, run one small fetch and inspect it. Two items in
 particular are unverified:
 
 * Groww's payload bodies for expiries, contracts and candles (the SDK does
-  not define them; use `fetch groww-probe`)
+  not define them; use `fetch groww-probe`). **Live check, 2026-11-03:** the
+  approval-key token flow worked (`/user/detail` returned 200), but
+  `/historical/expiries`, `/historical/contracts`, `/historical/candles`,
+  `/historical/candle/range` and `/live-data/ltp` all returned HTTP 403
+  `"Access forbidden for this request."` for that account. The requests match
+  the SDK byte for byte, so this is an account entitlement (Trade API data
+  subscription) issue, and the payload shapes remain unverified until an
+  entitled account runs the probe.
 * the Groww groww-symbol format `NSE-NIFTY-04Nov26-25000-CE` and the index
   symbols `NSE-NIFTY` / `NSE-BANKNIFTY`
 * the Upstox expired-candle interval string `5minute`

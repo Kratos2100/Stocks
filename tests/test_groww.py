@@ -124,3 +124,14 @@ def test_api_failure_is_raised():
     c = g.GrowwClient("ACCESS", session=FakeGroww(), pause=0)
     with pytest.raises(g.GrowwError, match="GA004"):
         c.expiries("NIFTY", 2026)
+
+
+def test_forbidden_data_endpoint_explains_entitlement():
+    # shape of Groww's live 403 body (token valid, data endpoints not entitled)
+    class Forbidden(FakeGroww):
+        def get(self, url, params=None, headers=None, timeout=None):
+            return Resp({"status": "FAILURE", "error": {"code": "403", "message": "Access forbidden for this request.",
+                                                        "metadata": None}}, 403)
+    c = g.GrowwClient("ACCESS", session=Forbidden(), pause=0)
+    with pytest.raises(g.GrowwError, match="Access forbidden.*not entitled"):
+        c.expiries("NIFTY", 2026, 10)
