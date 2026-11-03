@@ -249,6 +249,10 @@ def cmd_fetch(args) -> None:
         _merge_save(df, args.out, ["timestamp", "underlying", "expiry", "strike", "option_type"])
     elif src == "record":
         nse.ChainRecorder(args.symbols.split(","), args.out_dir, args.every).run()
+    elif src == "groww-probe":
+        from .data.providers.groww import GrowwClient
+        res = GrowwClient().probe(args.underlying, _d(args.expiry), _d(args.day))
+        print(json.dumps(res, indent=2, default=str))
     elif src == "snapshots-to-candles":
         import pandas as pd
         df = nse.snapshots_to_candles(pd.read_csv(args.chains), args.timeframe)
@@ -267,6 +271,13 @@ def cmd_fetch(args) -> None:
         elif src == "kite":
             from .data.providers.kite import KiteSource, make_kite
             df = KiteSource(make_kite()).fetch_options(**kw)
+        elif src == "groww":
+            from .data.providers.groww import GrowwClient
+            client = GrowwClient()
+            df = client.fetch_options(**kw)
+            if args.index_out:
+                _merge_save(client.index_candles(args.underlying, _d(args.start), _d(args.end)), args.index_out,
+                            ["underlying", "timestamp"])
         elif src == "dhan":
             from .data.providers.dhan import DhanSource, make_dhan
             df = DhanSource(make_dhan()).fetch_options(**kw)
@@ -349,7 +360,13 @@ def main(argv=None) -> None:
     f.add_argument("--chains", required=True)
     f.add_argument("--timeframe", type=int, default=5)
     f.add_argument("--out", default="data/recorded/options_5m.csv")
-    for name, hlp in (("upstox", "Upstox 5-min candles, active + expired (UPSTOX_ACCESS_TOKEN)"),
+    f = fs.add_parser("groww-probe", help="print raw Groww backtesting-API responses for one small request")
+    f.add_argument("--underlying", default="NIFTY")
+    f.add_argument("--expiry", required=True, help="YYYY-MM-DD")
+    f.add_argument("--day", required=True, help="a trading day on which that contract traded")
+    for name, hlp in (("groww", "Groww 5-min candles, active + expired (GROWW_API_KEY + GROWW_API_SECRET/TOTP, "
+                                "or GROWW_ACCESS_TOKEN)"),
+                      ("upstox", "Upstox 5-min candles, active + expired (UPSTOX_ACCESS_TOKEN)"),
                       ("kite", "Zerodha Kite 5-min candles, listed contracts (KITE_API_KEY, KITE_ACCESS_TOKEN)"),
                       ("dhan", "Dhan 5-min candles, listed contracts (DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)")):
         f = fs.add_parser(name, help=hlp)
@@ -363,7 +380,7 @@ def main(argv=None) -> None:
         f.add_argument("--bhavcopy", help="pick the most liquid strikes from a bhavcopy CSV")
         f.add_argument("--top", type=int, default=8)
         f.add_argument("--out", default=f"data/{name}_options_5m.csv")
-        if name == "upstox":
+        if name in ("upstox", "groww"):
             f.add_argument("--index-out", help="also save index candles (regime analytics only)")
     p.set_defaults(fn=cmd_fetch)
 

@@ -8,6 +8,7 @@ environment variables only. Never put tokens in config files or commit them.
 |---|---|---|---|---|---|
 | NSE F&O bhavcopy | `nselib` | free | no (end of day) | yes | pivots' previous-session H/L/C, contract universe, picking liquid strikes |
 | NSE live option chain | `nselib` | free | snapshots only | no | contract selection, building a free forward archive |
+| **Groww** | `requests` | Groww Trade API subscription + API key | yes, with OI | **yes** (backtesting API) | **backtesting**, if you trade on Groww |
 | **Upstox** | `requests` | free API app; the expired-instruments API may need a paid plan | yes, with OI | **yes** | **backtesting** (5-min history of expired weeklies) |
 | Zerodha Kite | `kiteconnect` | Kite Connect + historical add-on (paid) | yes, with OI | no | paper/live on Kite; build an archive daily |
 | Dhan | `dhanhq` | DhanHQ API (data plan) | yes, with OI | rolling ATM-relative only | paper/live on Dhan |
@@ -40,7 +41,44 @@ the growth of NSE's cumulative traded volume. Label such backtests
 `--label "NSE_CHAIN_SNAPSHOTS (sampled)"`. NSE's site is rate-limited and
 its terms of use apply, so keep `--every` at 30 seconds or more.
 
-## Upstox (recommended for backtesting)
+## Groww
+
+Groww's Trade API has dedicated backtesting endpoints: expiries, contracts
+(including expired ones) and 5-minute candles with OI. The adapter calls them
+with `requests`, using the paths, parameters and auth flow from Groww's
+official `growwapi` SDK. The SDK itself is not needed: it pins `pandas<3`
+and makes a network call when constructed.
+
+1. On groww.in → Trade API, create an API key. Choose the **approval
+   (key + secret)** type, or **TOTP**.
+2. Put the credentials in environment variables on **your** machine. Never
+   paste them into chat or commit them:
+
+```bash
+export GROWW_API_KEY=...       # plus ONE of:
+export GROWW_API_SECRET=...    #   approval key: the token is generated automatically each run
+# export GROWW_TOTP=123456     #   TOTP key: the current 6-digit code
+# export GROWW_TOTP_SECRET=... #   TOTP seed (pip install pyotp) to generate codes automatically
+# or simply: export GROWW_ACCESS_TOKEN=...   (a token generated on groww.in, valid for the day)
+```
+
+3. Check the response format once, then download:
+
+```bash
+# prints raw responses for one small request (expiries, a few contracts, a few candles)
+python -m options_mas.cli fetch groww-probe --underlying NIFTY --expiry 2026-10-28 --day 2026-10-27
+
+python -m options_mas.cli fetch groww --underlying NIFTY --expiry 2026-10-28 \
+    --start 2026-10-14 --end 2026-10-28 --strike-min 25000 --strike-max 26500 \
+    --out data/nifty_groww_5m.csv --index-out data/nifty_index_5m.csv
+```
+
+If `groww-probe` shows `parsed_contracts: 0` or `parsed_candles: 0` while
+the raw sample has data, the payload shape differs from what the parser
+expects. Paste the probe output (it contains no credentials) and the parser
+can be adjusted.
+
+## Upstox
 
 1. Create an app at the Upstox developer console and complete the OAuth login
    to obtain an access token. Tokens expire daily.
@@ -90,7 +128,7 @@ estimate everywhere, and by default it never opens trades. See
 
 ## Verification status
 
-The Upstox, Kite and Dhan adapters were written against each vendor's
+The Groww, Upstox, Kite and Dhan adapters were written against each vendor's
 official Python SDK, which defines the method names, paths and parameters.
 Parsing is unit tested with fixture payloads shaped like the documented
 responses. They have **not** been run against the live APIs from this
@@ -98,5 +136,9 @@ repository's environment, which has no access to NSE or broker hosts. Before
 relying on the data, run one small fetch and inspect it. Two items in
 particular are unverified:
 
+* Groww's payload bodies for expiries, contracts and candles (the SDK does
+  not define them; use `fetch groww-probe`)
+* the Groww groww-symbol format `NSE-NIFTY-04Nov26-25000-CE` and the index
+  symbols `NSE-NIFTY` / `NSE-BANKNIFTY`
 * the Upstox expired-candle interval string `5minute`
 * Dhan's response array names

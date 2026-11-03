@@ -28,7 +28,7 @@ pip install -e ".[dev]"
 pytest -q                                                     # unit tests
 
 python -m options_mas.cli backtest --synthetic --agents A01   # one agent, demo data
-python -m options_mas.cli fetch upstox --underlying NIFTY --expiry 2026-10-28 --start 2026-10-14 \
+python -m options_mas.cli fetch groww --underlying NIFTY --expiry 2026-10-28 --start 2026-10-14 \
     --end 2026-10-28 --strike-min 25000 --strike-max 26500 --out data/nifty_5m.csv   # real data (see docs)
 python -m options_mas.cli backtest --data opt5m.csv --label "VENDOR_X 2025" --chains chains.csv
 python -m options_mas.cli walkforward --synthetic --agents A02 --grid agent02.ema_period=7,9,11 --train 8 --test 4
@@ -39,7 +39,7 @@ python -m options_mas.cli dashboard --synthetic               # http://127.0.0.1
 
 ## Documentation
 
-* [Getting real options data](docs/DATA_SOURCES.md): NSE (free), Upstox, Kite, Dhan downloaders
+* [Getting real options data](docs/DATA_SOURCES.md): NSE (free), Groww, Upstox, Kite, Dhan downloaders
 * [Architecture](docs/ARCHITECTURE.md): components, data flow, orchestrator modes
 * [Strategies](docs/STRATEGIES.md): exact rules as implemented, configurable choices, caveats
 * [Signal protocol](docs/SIGNAL_PROTOCOL.md): the common JSON message schema
