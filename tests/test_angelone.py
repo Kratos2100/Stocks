@@ -2,7 +2,7 @@
 
 Request paths, bodies and the websocket packet layout mirror smartapi-python
 1.5.5. The response bodies are shaped like Angel One's documented responses;
-they have not yet been confirmed against the live API.
+The tests at the end use the shapes seen on the live API (2026-11-03) with synthetic values.
 """
 import asyncio
 import json
@@ -214,3 +214,60 @@ def test_feed_maps_tokens_volume_and_streams():
     assert ticks[0].ts == datetime(2026, 11, 3, 9, 15, 1) and ticks[1].price == 100.5
     assert [t.qty for t in ticks] == [0.0, 300.0, 0.0]          # growth of cumulative day volume
     assert all(t.bid is None and t.ask is None for t in ticks)  # never claims bid/ask-classified flow
+
+
+# ---- shapes observed on the live API (2026-11-03); values below are synthetic
+LIVE_SHAPE_MASTER = [
+    {"token": "11111", "symbol": "NIFTY29JUN2730000CE", "name": "NIFTY", "expiry": "29JUN2027",
+     "strike": "3000000.000000", "lotsize": "65", "instrumenttype": "OPTIDX", "exch_seg": "NFO",
+     "tick_size": "5.000000", "freeze_qty": "1801", "is_cas_enabled": False},
+    # the live master names the index "NIFTY" and puts "Nifty 50" in symbol
+    {"token": "22222", "symbol": "Nifty 50", "name": "NIFTY", "expiry": "", "strike": "0.000000",
+     "lotsize": "1", "instrumenttype": "AMXIDX", "exch_seg": "NSE", "tick_size": "0.000000",
+     "freeze_qty": "0", "is_cas_enabled": False},
+]
+
+
+def test_live_master_shape():
+    con = a.parse_scrip_master(LIVE_SHAPE_MASTER, "NIFTY")
+    assert list(zip(con.strike, con.option_type, con.lot_size)) == [(30000.0, "CE", 65)]
+    assert con.iloc[0]["expiry"] == date(2027, 6, 29)
+    assert a.index_token(LIVE_SHAPE_MASTER, "NIFTY") == "22222"
+
+
+class _Resp:
+    def __init__(self, status, text):
+        self.status_code, self.text = status, text
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class _RateLimitedHttp:
+    """Answers like Angel One when the historical API is called too fast: HTTP 403 with
+    a plain-text body, then a normal JSON success."""
+    def __init__(self, fails):
+        self.fails, self.calls = fails, 0
+
+    def post(self, url, headers=None, data=None, timeout=None):
+        self.calls += 1
+        if self.calls <= self.fails:
+            return _Resp(403, "Access denied because of exceeding access rate")
+        return _Resp(200, json.dumps({"status": True, "message": "SUCCESS", "errorcode": "", "data": [
+            ["2026-11-02T09:15:00+05:30", 100.0, 101.0, 99.0, 100.5, 0]]}))
+
+
+def _client(http, retries=6):
+    s = a.Session("k", "c", "jwt", "feed")
+    return a.AngelOneClient(session=s, http=http, pause=0, scrip_master=[], retries=retries, backoff=0)
+
+
+def test_rate_limit_403_is_retried():
+    http = _RateLimitedHttp(fails=2)
+    bars = _client(http).candles("NSE", "22222", date(2026, 11, 2), date(2026, 11, 2))
+    assert http.calls == 3 and len(bars) == 1 and bars[0]["close"] == 100.5
+
+
+def test_rate_limit_gives_up_with_clear_error():
+    with pytest.raises(a.AngelOneError, match="rate limit"):
+        _client(_RateLimitedHttp(fails=10), retries=2).candles("NSE", "1", date(2026, 11, 2), date(2026, 11, 2))

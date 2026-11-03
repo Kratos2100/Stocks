@@ -167,8 +167,9 @@ def listed_expiries(items: Iterable[dict], underlying: str) -> list[date]:
 def index_token(items: Optional[Iterable[dict]], underlying: str) -> str:
     und = underlying.upper()
     for it in items or []:
-        if it.get("exch_seg") == "NSE" and it.get("name") == INDEX_NAMES.get(und) \
-                and str(it.get("instrumenttype")) in ("AMXIDX", "INDEX", ""):
+        # the master lists the index as name "NIFTY", symbol "Nifty 50", instrumenttype "AMXIDX"
+        if it.get("exch_seg") == "NSE" and str(it.get("instrumenttype")) in ("AMXIDX", "INDEX") \
+                and (it.get("symbol") == INDEX_NAMES.get(und) or it.get("name") == INDEX_NAMES.get(und)):
             return str(it["token"])
     return INDEX_TOKENS[und]
 
@@ -185,7 +186,7 @@ class AngelOneClient:
     CHUNK_DAYS = 30   # Angel allows up to 100 days per FIVE_MINUTE request; stay well inside it
 
     def __init__(self, session: Optional[Session] = None, http: Any = None, pause: float = 0.4,
-                 scrip_master: Optional[list[dict]] = None):
+                 scrip_master: Optional[list[dict]] = None, retries: int = 6, backoff: float = 1.0):
         if http is None:
             import requests
             http = requests.Session()
@@ -193,6 +194,8 @@ class AngelOneClient:
         self.s = session or session_from_env(http)
         self.pause = pause          # historical API rate limit is a few requests per second
         self._master = scrip_master
+        self.retries = retries
+        self.backoff = backoff
 
     def master(self) -> list[dict]:
         if self._master is None:
@@ -203,14 +206,23 @@ class AngelOneClient:
         return self._master
 
     def _post(self, path: str, body: dict) -> Any:
-        r = self.http.post(ROOT + path, headers=_headers(self.s.api_key, self.s.jwt), data=json.dumps(body),
-                           timeout=30)
+        for attempt in range(self.retries + 1):
+            r = self.http.post(ROOT + path, headers=_headers(self.s.api_key, self.s.jwt), data=json.dumps(body),
+                               timeout=30)
+            if self.pause:
+                _time.sleep(self.pause)
+            # rate limit: HTTP 403 (sometimes 429) with the plain-text body
+            # "Access denied because of exceeding access rate"
+            if r.status_code in (403, 429) and "access rate" in (getattr(r, "text", "") or "").lower():
+                if attempt < self.retries:
+                    _time.sleep(self.backoff * 2 ** attempt)
+                    continue
+                raise AngelOneError(f"POST {path}: HTTP {r.status_code} rate limit, gave up after {attempt + 1} tries")
+            break
         try:
             payload = r.json()
         except Exception:
             raise AngelOneError(f"POST {path}: HTTP {r.status_code} (non-JSON response)")
-        if self.pause:
-            _time.sleep(self.pause)
         return _check(payload, f"POST {path}")
 
     def candles(self, exchange: str, token: str, start: date, end: date, interval: str = "FIVE_MINUTE") -> list[dict]:
@@ -269,7 +281,15 @@ class AngelOneClient:
         out["parsed_index_candles"] = len(parse_candles(raw_idx))
         if not con.empty:
             first = con[con["expiry"] == con["expiry"].min()]
-            r = first.iloc[len(first) // 2]
+            ref = None
+            try:
+                ref = float(raw_idx[-1][4]) if raw_idx else None
+            except (IndexError, TypeError, ValueError):
+                ref = None
+            if ref is None:
+                r = first.iloc[len(first) // 2]
+            else:   # the strike nearest the index: far-OTM strikes often have no trades
+                r = first.iloc[int((first["strike"] - ref).abs().to_numpy().argmin())]
             raw = self._post(CANDLE_PATH, {"exchange": "NFO", "symboltoken": r["token"], "interval": "FIVE_MINUTE",
                                            "fromdate": f"{day} 09:15", "todate": f"{day} 10:00"})
             out["option_symbol"] = r["symbol"]
