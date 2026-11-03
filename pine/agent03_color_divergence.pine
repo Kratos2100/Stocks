@@ -1,0 +1,54 @@
+// © options_mas – validation indicator for AGENT 03 (apply to an OPTION PREMIUM chart, 5-minute)
+// Individual-candle volume delta vs normal candle colour.
+//
+// IMPORTANT: TradingView does not expose bid/ask-classified (aggressor) volume for NSE options.
+// This script ESTIMATES each candle's buy/sell volume from lower-timeframe bar direction
+// (up-bar volume = buy, down-bar volume = sell, unchanged = split). It is an ESTIMATE and must
+// not be presented as actual exchange order flow. The Python engine labels such data
+// ESTIMATED_* and, by default, never opens positions on it.
+//@version=5
+indicator("A03 · Colour Divergence (individual candle volume delta – ESTIMATED)", shorttitle="A03 Δ", overlay=false)
+
+ltf        = input.timeframe("1", "Lower timeframe for estimation")
+neutralPct = input.float(5.0,  "Neutral |delta %| threshold")
+minPct     = input.float(10.0, "Minimum |delta %|")
+minRel     = input.float(1.0,  "Minimum relative delta")
+strongPct  = input.float(30.0, "Strong |delta %|")
+strongRel  = input.float(1.5,  "Strong relative delta")
+lookback   = input.int(20,     "Average |delta| lookback")
+
+[cs, os, vs] = request.security_lower_tf(syminfo.tickerid, ltf, [close, open, volume])
+float buyV = 0.0
+float sellV = 0.0
+n = array.size(vs)
+if n > 0
+    for i = 0 to n - 1
+        v = array.get(vs, i)
+        c = array.get(cs, i)
+        o = array.get(os, i)
+        if c > o
+            buyV += v
+        else if c < o
+            sellV += v
+        else
+            buyV += v / 2
+            sellV += v / 2
+total = buyV + sellV
+delta = buyV - sellV
+dPct  = total > 0 ? delta / total * 100 : 0.0
+avgAbs = ta.sma(math.abs(delta), lookback)[1]          // previous candles only
+rel    = avgAbs > 0 ? math.abs(delta) / avgAbs : na
+
+bear = close < open
+bull = close > open
+notNeutral = math.abs(dPct) >= neutralPct
+bullDiv = bear and delta > 0 and notNeutral             // red candle, buying dominance  -> BUY CE candidate
+bearDiv = bull and delta < 0 and notNeutral             // green candle, selling dominance -> BUY PE candidate
+weak    = math.abs(dPct) < minPct or na(rel) or rel < minRel
+strong  = math.abs(dPct) >= strongPct and not na(rel) and rel >= strongRel
+
+plot(delta, "Volume delta (estimated)", style=plot.style_columns, color=delta >= 0 ? color.new(color.teal, 20) : color.new(color.red, 20))
+hline(0, color=color.new(color.gray, 60))
+plotshape(bullDiv and not weak, "Bullish disagreement", shape.triangleup,   location.bottom, strong ? color.lime : color.green, size=size.tiny)
+plotshape(bearDiv and not weak, "Bearish disagreement", shape.triangledown, location.top,    strong ? color.fuchsia : color.red, size=size.tiny)
+plotshape((bullDiv or bearDiv) and weak, "Weak disagreement", shape.circle, location.top, color.gray, size=size.tiny)

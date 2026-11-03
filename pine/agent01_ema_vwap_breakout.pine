@@ -1,0 +1,60 @@
+// © options_mas – validation indicator for AGENT 01 (apply to an OPTION PREMIUM chart, 5-minute)
+// Mirrors options_mas/agents/ema_vwap.py so signals can be compared bar by bar.
+//@version=5
+indicator("A01 · 50 EMA + VWAP Crossover Candle Breakout", shorttitle="A01", overlay=true, max_labels_count=500)
+
+emaLen   = input.int(50, "EMA length")
+offset   = input.float(2.0, "Entry offset (points above breakout candle high)")
+xoDir    = input.string("any", "Crossover direction", options=["any", "ema_above_vwap", "ema_below_vwap"])
+basis    = input.string("high", "Breakout basis", options=["high", "close"])
+
+ema  = ta.ema(close, emaLen)
+vw   = ta.vwap(hlc3)
+plot(ema, "50 EMA", color=color.new(#7b4fd6, 0), linewidth=2)
+plot(vw,  "VWAP",   color=color.new(#e08a1e, 0), linewidth=2)
+
+// ---- actual crossover: sign change of (EMA - VWAP) between completed candles (zero values skipped)
+var int lastSign = 0
+d   = ema - vw
+sgn = na(d) ? 0 : d > 0 ? 1 : d < 0 ? -1 : 0
+crossed = sgn != 0 and lastSign != 0 and sgn != lastSign
+crossedUp = crossed and sgn > 0
+if sgn != 0
+    lastSign := sgn
+dirOk = xoDir == "any" or (xoDir == "ema_above_vwap" and crossedUp) or (xoDir == "ema_below_vwap" and crossed and not crossedUp)
+
+// ---- state machine: 0 WAITING_FOR_CROSSOVER, 1 WAITING_FOR_BREAKOUT, 2 BREAKOUT_IDENTIFIED, 3 POSITION_OPEN
+var int   state   = 0
+var float refHigh = na
+var int   refBar  = na
+var float entry   = na
+newDay = ta.change(time("D")) != 0
+if newDay and state != 3
+    state := 0                          // pending setups expire at session end
+
+// 1) intrabar entry trigger (only on candles AFTER the breakout candle completed)
+enteredNow = false
+if state == 2 and high >= entry
+    state := 3
+    enteredNow := true
+    label.new(bar_index, low, "BUY @" + str.tostring(math.max(entry, open), format.mintick), style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+
+// 2) close-based logic
+if barstate.isconfirmed
+    if state == 3
+        if close < low[1]               // completed close below previous completed candle low
+            state := 0
+            label.new(bar_index, high, "EXIT", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+    else if crossed and dirOk
+        state   := 1
+        refHigh := high
+        refBar  := bar_index
+    else if state == 1
+        b = basis == "high" ? high : close
+        if bar_index > refBar and b > refHigh
+            state := 2
+            entry := high + offset
+            label.new(bar_index, high, "BO " + str.tostring(entry, format.mintick), style=label.style_label_down, color=color.blue, textcolor=color.white, size=size.tiny)
+
+plotshape(crossed and dirOk and barstate.isconfirmed, "Crossover candle", shape.circle, location.abovebar, color.gray, size=size.tiny)
+plot(state == 2 ? entry : na, "Entry trigger", color=color.green, style=plot.style_linebr)

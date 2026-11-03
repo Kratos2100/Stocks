@@ -1,0 +1,107 @@
+# Options multi-agent trading system – default configuration.
+# Every value here is optional; omitted keys fall back to options_mas/config.py.
+# VERIFY lot sizes and charges against current NSE / broker documents before use.
+
+db_path = "options_mas.sqlite3"
+
+[session]
+market_open = "09:15"
+market_close = "15:30"
+timeframe_min = 5
+no_new_entries_after = "15:00"
+eod_squareoff = "15:15"          # risk-layer intraday square-off (does not replace strategy exits)
+
+[instruments.NIFTY]
+lot_size = 65
+strike_step = 50
+
+[instruments.BANKNIFTY]
+lot_size = 30
+strike_step = 100
+
+[agent01]                         # 50 EMA + VWAP crossover candle breakout
+enabled = true
+ema_period = 50
+entry_offset = 2.0                # ENTRY = breakout candle high + 2.00
+crossover_direction = "any"       # any | ema_above_vwap | ema_below_vwap
+breakout_basis = "high"           # high | close
+reset_on_new_crossover = true
+evaluate_exit_on_entry_candle = true
+ema_reset_daily = false
+
+[agent02]                         # Fibonacci pivots + 9 EMA breakout
+enabled = true
+ema_period = 9
+entry_offset = 2.0                # ENTRY = breakout candle high + 2.00 (CE and PE)
+levels = ["S3", "S2", "S1", "P", "R1", "R2", "R3"]
+pe_mode = "as_specified"          # as_specified | mirror_ce  (see docs/STRATEGIES.md)
+target_reference = "broken_level" # broken_level | entry_price
+cancel_pending_on_invalidation = false
+
+[agent03]                         # Colour divergence / individual candle volume delta
+enabled = true
+min_delta_pct = 10.0
+min_relative_delta = 1.0
+min_total_volume = 0.0
+neutral_delta_pct = 5.0
+min_signal_strength = 0.0
+strong_delta_pct = 30.0
+strong_relative_delta = 1.5
+avg_lookback = 20
+estimate_when_missing = true
+allow_estimated_delta_for_entries = false
+mapping = "literal"               # literal | per_contract
+entry_rule = "none"               # none | signal_high_break | next_candle_open  (creator rules unverified)
+entry_offset = 2.0
+stop_rule = "none"                # none | signal_candle_low | fixed_points | pct
+exit_on_opposite_disagreement = false
+exit_on_close_below_prev_low = false
+
+[orchestrator]
+mode = "A"                        # A independent | B consensus analytics | C intelligent selection
+allow_multiple_agents_same_contract = false
+conflict_policy = "allow_and_flag" # allow_and_flag | first_come | block_both
+consensus_window_minutes = 15
+ranking_min_trades = 20
+
+[selection]
+expiry_rule = "nearest"
+moneyness = "ATM"
+min_volume = 1000
+min_oi = 10000
+max_spread_pct = 2.0
+max_spread_abs = 3.0
+min_premium = 20.0
+max_premium = 800.0
+
+[risk]
+capital = 500000.0
+risk_per_trade_pct = 1.0
+max_lots_per_trade = 10
+max_capital_per_trade_pct = 20.0
+max_daily_loss = 10000.0
+max_trades_per_day = 12
+max_concurrent_positions = 3
+max_positions_per_underlying = 2
+max_total_exposure_pct = 50.0
+flatten_on_daily_loss = true
+agent_allocation = { A01 = 0.34, A02 = 0.33, A03 = 0.33 }
+
+[charges]
+brokerage_per_order = 20.0
+stt_sell_pct = 0.1
+exchange_txn_pct = 0.03503
+sebi_per_crore = 10.0
+stamp_buy_pct = 0.003
+gst_pct = 18.0
+
+[execution]
+mode = "backtest"                 # backtest | paper | manual | live
+live_enabled = false              # live trading is OFF; see docs/DEPLOYMENT.md
+slippage_points = 0.5
+close_signal_fill = "next_open"   # next_open | close
+max_participation_pct = 20.0
+
+[backtest]
+intrabar_exit_on_entry_bar = false
+warmup_sessions = 3

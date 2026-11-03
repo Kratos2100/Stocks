@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Options Agents Monitor</title>
+<script src="/static/vendor/lightweight-charts-4.1.3.js"></script>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#1b1f24; --muted:#5f6b7a; --line:#e3e7ec;
+  --up:#1a9c6b; --down:#d6455d; --accent:#2f6fdf; --warn:#b7791f; --ema50:#7b4fd6; --vwap:#e08a1e;
+  --ema9:#0c8fa8; --pivot:#9aa4b2; --chip:#eef1f5;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1216; --panel:#171b21; --ink:#e6e9ee; --muted:#9aa4b2; --line:#272d36;
+    --up:#2bbf86; --down:#ef5c74; --accent:#5b8ff0; --warn:#e0a84a; --ema50:#a283f0; --vwap:#f0a24a;
+    --ema9:#3cc1d9; --pivot:#5d6877; --chip:#222831;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f1216; --panel:#171b21; --ink:#e6e9ee; --muted:#9aa4b2; --line:#272d36;
+  --up:#2bbf86; --down:#ef5c74; --accent:#5b8ff0; --warn:#e0a84a; --ema50:#a283f0; --vwap:#f0a24a;
+  --ema9:#3cc1d9; --pivot:#5d6877; --chip:#222831;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
+.wrap{max-width:1400px;margin:0 auto;padding:16px 20px;display:grid;gap:16px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.pill{padding:3px 9px;border-radius:999px;background:var(--chip);color:var(--muted);font-size:12px;white-space:nowrap}
+.pill.warn{background:color-mix(in srgb,var(--down) 18%,transparent);color:var(--down);font-weight:600}
+button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 11px;border-radius:7px;cursor:pointer;font:inherit;font-size:13px}
+button:hover{border-color:var(--accent)}
+button.danger{border-color:var(--down);color:var(--down)}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+@media (max-width:980px){.grid3{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
+.card h2{font-size:13px;margin:0 0 2px;font-weight:650}
+.card .sub{color:var(--muted);font-size:12px;margin-bottom:10px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12.5px}
+.kv dt{color:var(--muted)} .kv dd{margin:0;text-align:right;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.contract{border-top:1px solid var(--line);padding-top:8px;margin-top:8px}
+.contract:first-of-type{border-top:0;margin-top:0;padding-top:0}
+.state{font-weight:600;font-size:12px}
+.pos{color:var(--up)} .neg{color:var(--down)}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.stat .l{color:var(--muted);font-size:12px} .stat .v{font-size:18px;font-weight:650;font-variant-numeric:tabular-nums}
+#chart{height:420px} #delta{height:140px;margin-top:6px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
+label.tog{font-size:12.5px;color:var(--muted);display:flex;gap:5px;align-items:center}
+select{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:inherit;font-size:13px;max-width:100%}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.scroll{overflow:auto;max-height:340px}
+.reason{white-space:normal;min-width:260px;color:var(--muted)}
+.note{font-size:12px;color:var(--warn)}
+</style>
+</head>
+<body>
+<header>
+  <div class="row"><h1>Options Multi-Agent Monitor</h1><span class="pill" id="label">—</span><span class="pill" id="mode">—</span></div>
+  <div class="row"><span class="pill" id="clock">—</span>
+    <button id="pause">Pause</button><button id="step">Step</button>
+    <button class="danger" id="estop">Emergency stop</button></div>
+</header>
+<div class="wrap">
+  <div class="strip" id="risk"></div>
+  <div class="grid3" id="agents"></div>
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <div class="row"><select id="contract"></select>
+        <label class="tog"><input type="checkbox" id="t1" checked>A01 50 EMA + VWAP</label>
+        <label class="tog"><input type="checkbox" id="t2" checked>A02 9 EMA + Pivots</label>
+        <label class="tog"><input type="checkbox" id="t3" checked>A03 Delta</label></div>
+      <div class="legend"><span><i style="background:var(--ema50)"></i>50 EMA</span><span><i style="background:var(--vwap)"></i>VWAP</span>
+        <span><i style="background:var(--ema9)"></i>9 EMA</span><span><i style="background:var(--pivot)"></i>Fib pivots</span></div>
+    </div>
+    <div id="chart"></div>
+    <div class="row" style="justify-content:space-between;margin-top:8px"><span class="legend">Individual candle volume delta (buy − sell)</span><span class="note" id="deltanote"></span></div>
+    <div id="delta"></div>
+  </div>
+  <div class="grid3" style="grid-template-columns:minmax(0,2fr) minmax(0,1fr)">
+    <div class="card"><h2>Recent signals</h2><div class="sub">Every signal explains conditions satisfied / not satisfied</div>
+      <div class="scroll"><table id="signals"></table></div></div>
+    <div class="card"><h2>Open positions</h2><div class="sub">Live mark-to-market</div><div class="scroll"><table id="positions"></table></div>
+      <h2 style="margin-top:14px">Pending approvals</h2><div class="sub">Manual approval mode only</div><div class="scroll"><table id="approvals"></table></div></div>
+  </div>
+  <div class="card"><h2>Completed trades</h2><div class="sub" id="perf">Net of modelled charges and slippage</div><div class="scroll"><table id="trades"></table></div></div>
+  <div class="sub" style="text-align:center">Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener" style="color:var(--muted)">TradingView Lightweight Charts™</a> (Apache-2.0)</div>
+</div>
+<script>
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (v,d=2) => v==null||isNaN(v) ? "—" : Number(v).toLocaleString("en-IN",{minimumFractionDigits:d,maximumFractionDigits:d});
+const cls = v => v>0?"pos":v<0?"neg":"";
+const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const NAMES={A01:"Agent 01 · 50 EMA + VWAP",A02:"Agent 02 · Fibonacci Pivot + 9 EMA",A03:"Agent 03 · Color Divergence"};
+let chart, delta, cs, lines={}, pivotSeries=[], deltaSeries, current=null, paused=false;
+
+function mkCharts(){
+  const opts = h => ({height:h,layout:{background:{color:css('--panel')},textColor:css('--muted'),fontSize:11},
+    grid:{vertLines:{color:css('--line')},horzLines:{color:css('--line')}},rightPriceScale:{borderColor:css('--line')},
+    timeScale:{borderColor:css('--line'),timeVisible:true,secondsVisible:false},crosshair:{mode:0}});
+  chart = LightweightCharts.createChart(document.getElementById('chart'), opts(420));
+  delta = LightweightCharts.createChart(document.getElementById('delta'), opts(140));
+  cs = chart.addCandlestickSeries({upColor:css('--up'),downColor:css('--down'),borderVisible:false,wickUpColor:css('--up'),wickDownColor:css('--down')});
+  lines.ema50 = chart.addLineSeries({color:css('--ema50'),lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  lines.vwap  = chart.addLineSeries({color:css('--vwap'),lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  lines.ema9  = chart.addLineSeries({color:css('--ema9'),lineWidth:1.5,priceLineVisible:false,lastValueVisible:false});
+  deltaSeries = delta.addHistogramSeries({priceLineVisible:false});
+  chart.timeScale().subscribeVisibleLogicalRangeChange(r=>{ if(r) delta.timeScale().setVisibleLogicalRange(r); });
+  new ResizeObserver(()=>{chart.applyOptions({width:document.getElementById('chart').clientWidth});
+    delta.applyOptions({width:document.getElementById('delta').clientWidth});}).observe(document.getElementById('chart'));
+}
+async function j(u,o){const r=await fetch(u,o); return r.json();}
+
+function agentCard(a){
+  const rows = a.contracts.map(c=>{
+    const s=c.current_signal||{}; const p=c.position;
+    return `<div class="contract"><div class="row" style="justify-content:space-between"><b style="font-size:12.5px">${esc(c.contract.key)}</b><span class="state">${esc(c.state)}</span></div>
+    <dl class="kv"><dt>Last signal</dt><dd title="${esc(s.reason)}">${esc(s.signal_type||"—")} ${s.status?"· "+esc(s.status):""} ${s.signal_ts?"· "+esc(s.signal_ts.slice(5,16).replace('T',' ')):""}</dd>
+    <dt>Reference candle</dt><dd>${c.reference_candle? (c.reference_candle.ts? esc(c.reference_candle.ts.slice(11,16))+" H "+fmt(c.reference_candle.high) : esc(c.reference_candle.level)+" "+fmt(c.reference_candle.price)) :"—"}</dd>
+    <dt>Breakout candle</dt><dd>${c.breakout_candle? esc(c.breakout_candle.ts.slice(11,16))+" H "+fmt(c.breakout_candle.high):"—"}</dd>
+    <dt>Entry trigger</dt><dd>${fmt(c.entry_trigger)}</dd>
+    <dt>Position</dt><dd>${p? "OPEN @ "+fmt(p.entry_price)+" × "+p.qty : "flat"}</dd>
+    <dt>Last exit reason</dt><dd>${esc(c.last_exit_reason||"—")}</dd>
+    <dt>Realised P&amp;L</dt><dd class="${cls(c.realized_pnl)}">${fmt(c.realized_pnl)} (${c.trades} trades)</dd></dl></div>`;}).join("");
+  return `<div class="card"><h2>${NAMES[a.agent_id]||esc(a.strategy_name)}</h2><div class="sub">${a.enabled?"Active":"Disabled"} · ${a.contracts.length} monitored contract(s)</div>${rows||'<div class="sub">No contracts</div>'}</div>`;
+}
+
+async function refreshStatus(){
+  const s = await j('/api/status');
+  document.getElementById('label').textContent = s.data_label;
+  document.getElementById('label').className = 'pill' + (s.warnings && s.warnings.length ? ' warn':'');
+  document.getElementById('mode').textContent = `exec: ${s.mode} · orchestrator: mode ${s.orchestrator_mode}`;
+  document.getElementById('clock').textContent = (s.now||'—').replace('T',' ') + (s.done?' · finished':'');
+  const r = s.risk||{};
+  const day = (r.realized_pnl||0)+(r.unrealized_pnl||0);
+  document.getElementById('risk').innerHTML = [
+    ['Day P&L', `<span class="${cls(day)}">${fmt(day)}</span>`],['Realised', fmt(r.realized_pnl)],['Unrealised', fmt(r.unrealized_pnl)],
+    ['Equity', fmt(r.equity,0)],['Entries today', `${r.entries_today??0} / ${r.limits?.max_trades_per_day??'—'}`],
+    ['Open positions', `${(s.positions||[]).length} / ${r.limits?.max_concurrent_positions??'—'}`],
+    ['Risk status', r.emergency? '<span class="neg">EMERGENCY</span>' : r.halted? `<span class="neg">HALTED</span>`:'<span class="pos">OK</span>']
+  ].map(([l,v])=>`<div class="stat"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
+  document.getElementById('agents').innerHTML = (s.agents||[]).map(agentCard).join('');
+  document.getElementById('positions').innerHTML = '<tr><th>Agent</th><th>Contract</th><th>Qty</th><th>Entry</th><th>LTP</th><th>P&L</th></tr>' +
+    (s.positions||[]).map(p=>`<tr><td>${p.agent_id}</td><td>${esc(p.contract_key)}</td><td class="num">${p.open_qty}</td><td class="num">${fmt(p.entry_price)}</td><td class="num">${fmt(p.last_price)}</td><td class="num ${cls(p.unrealized_pnl)}">${fmt(p.unrealized_pnl)}</td></tr>`).join('');
+  document.getElementById('approvals').innerHTML = (s.approvals||[]).length ? (s.approvals||[]).map(o=>`<tr><td>${o.agent_id}</td><td>${esc(o.contract_key)}</td><td class="num">${o.qty}</td>
+    <td><button onclick="approve('${o.order_id}','approve')">Approve</button> <button onclick="approve('${o.order_id}','reject')">Reject</button></td></tr>`).join('') : '<tr><td class="sub">None</td></tr>';
+  const sel = document.getElementById('contract');
+  const keys = [...new Set((s.agents||[]).flatMap(a=>a.contracts.map(c=>c.contract.key)))].sort();
+  if (sel.options.length !== keys.length){ sel.innerHTML = keys.map(k=>`<option>${esc(k)}</option>`).join(''); if(current && keys.includes(current)) sel.value=current; }
+  if(!current && keys.length){ current = keys[0]; sel.value=current; }
+  paused = s.paused; document.getElementById('pause').textContent = paused?'Resume':'Pause';
+}
+window.approve = async (id,a)=>{ await fetch(`/api/approvals/${id}/${a}`,{method:'POST'}); refreshStatus(); };
+
+async function refreshChart(){
+  if(!current) return;
+  const d = await j('/api/chart/'+encodeURIComponent(current));
+  if(!d.candles) return;
+  cs.setData(d.candles);
+  const t1=document.getElementById('t1').checked, t2=document.getElementById('t2').checked, t3=document.getElementById('t3').checked;
+  lines.ema50.setData(t1?(d.lines.ema50||[]):[]); lines.vwap.setData(t1?(d.lines.vwap||[]):[]); lines.ema9.setData(t2?(d.lines.ema9||[]):[]);
+  pivotSeries.forEach(s=>chart.removeSeries(s)); pivotSeries=[];
+  if(t2 && d.pivots){ for(const [name,pts] of Object.entries(d.pivots)){ const s=chart.addLineSeries({color:css('--pivot'),lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,title:name}); s.setData(pts); pivotSeries.push(s);} }
+  deltaSeries.setData(t3? d.delta.map(x=>({time:x.time,value:x.value,color:x.value>=0?css('--up'):css('--down')})) : []);
+  document.getElementById('deltanote').textContent = d.delta_source ? (d.delta_estimated? `Delta source: ${d.delta_source} — NOT bid/ask-classified order flow` : `Delta source: ${d.delta_source} (bid/ask-classified)`) : '';
+  const show = {A01:t1,A02:t2,A03:t3};
+  const M = {crossover:['aboveBar','circle','--muted'],breakout:['aboveBar','arrowDown','--accent'],entry:['belowBar','arrowUp','--up'],exit:['aboveBar','arrowDown','--down'],div_bull:['belowBar','circle','--up'],div_bear:['aboveBar','circle','--down']};
+  const marks = d.markers.filter(m=>show[m.agent] && M[m.kind] && (m.kind.startsWith('div')? m.text.includes('-S')||m.text.includes('-M') : true))
+    .map(m=>({time:m.time,position:M[m.kind][0],shape:M[m.kind][1],color:css(M[m.kind][2]),text:m.kind==='entry'||m.kind==='exit'?m.agent+(m.kind==='entry'?' IN':' OUT'):(m.kind==='crossover'?'XO':m.kind==='breakout'?'BO':'')}));
+  marks.sort((a,b)=>a.time-b.time); cs.setMarkers(marks);
+}
+async function refreshTables(){
+  const sig = await j('/api/signals?limit=60');
+  document.getElementById('signals').innerHTML = '<tr><th>Time</th><th>Agent</th><th>Contract</th><th>Type</th><th>Status</th><th>Entry</th><th>Reason</th></tr>' +
+    sig.filter(s=>s.status!=='INFO'||s.signal_type!=='NO_TRADE').map(s=>`<tr><td>${esc(s.signal_ts.slice(5,16).replace('T',' '))}</td><td>${s.agent_id}</td><td>${esc(s.contract_key)}</td><td>${s.signal_type}</td><td>${s.status}</td><td class="num">${fmt(s.entry_trigger)}</td>
+    <td class="reason" title="Satisfied: ${esc((s.conditions_satisfied||[]).join('; '))}\nNot satisfied: ${esc((s.conditions_not_satisfied||[]).join('; '))}">${esc(s.reason)}</td></tr>`).join('');
+  const tr = await j('/api/trades');
+  document.getElementById('trades').innerHTML = '<tr><th>Agent</th><th>Contract</th><th>Entry</th><th>Exit</th><th>Qty</th><th>Entry px</th><th>Exit px</th><th>Exit reason</th><th>Net P&L</th></tr>' +
+    tr.map(t=>`<tr><td>${t.agent_id}</td><td>${esc(t.contract_key)}</td><td>${esc(t.entry_ts.slice(5,16).replace('T',' '))}</td><td>${esc(t.exit_ts.slice(11,16))}</td><td class="num">${t.qty}</td><td class="num">${fmt(t.entry_price)}</td><td class="num">${fmt(t.exit_price)}</td><td>${t.exit_reason}</td><td class="num ${cls(t.net_pnl)}">${fmt(t.net_pnl)}</td></tr>`).join('');
+  const p = await j('/api/performance'); const o=p.overall;
+  document.getElementById('perf').textContent = `${p.data_label} · ${o.total_trades} trades · win rate ${fmt(o.win_rate_pct)}% · net ${fmt(o.net_pnl)} · PF ${o.profit_factor??'—'} · max DD ${fmt(o.max_drawdown)}`;
+}
+let pending=false;
+async function refreshAll(){ if(pending) return; pending=true; try{ await refreshStatus(); await refreshChart(); await refreshTables(); } finally{ pending=false; } }
+document.getElementById('contract').onchange = e=>{ current=e.target.value; refreshChart(); };
+['t1','t2','t3'].forEach(id=>document.getElementById(id).onchange=refreshChart);
+document.getElementById('pause').onclick = async()=>{ await fetch('/api/control/'+(paused?'resume':'pause'),{method:'POST'}); refreshStatus(); };
+document.getElementById('step').onclick = async()=>{ await fetch('/api/control/step',{method:'POST'}); refreshAll(); };
+document.getElementById('estop').onclick = async()=>{ if(confirm('Trigger EMERGENCY STOP? All positions will be exited and new entries blocked.')){ await fetch('/api/emergency-stop',{method:'POST'}); refreshAll(); } };
+mkCharts(); refreshAll();
+const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+ws.onmessage = ()=>refreshAll();
+setInterval(()=>{ if(ws.readyState!==1) refreshAll(); }, 3000);
+</script>
+</body>
+</html>

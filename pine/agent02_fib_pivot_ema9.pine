@@ -1,0 +1,81 @@
+// © options_mas – validation indicator for AGENT 02 (apply to an OPTION PREMIUM chart, 5-minute)
+// Mirrors options_mas/agents/fib_pivot.py. Use Direction=UP on CE charts (and on PE charts in
+// pe_mode="mirror_ce"); use Direction=DOWN on PE charts for pe_mode="as_specified".
+//@version=5
+indicator("A02 · Fibonacci Pivots + 9 EMA Breakout", shorttitle="A02", overlay=true, max_labels_count=500)
+
+emaLen = input.int(9, "EMA length")
+offset = input.float(2.0, "Entry offset (points above breakout candle HIGH)")
+dir    = input.string("UP", "Direction", options=["UP", "DOWN"])
+
+// previous completed session H/L/C of THIS contract (non-repainting pattern)
+[pH, pL, pC] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]], lookahead=barmerge.lookahead_on)
+P  = (pH + pL + pC) / 3
+rg = pH - pL
+lv = array.from(P - rg, P - 0.618 * rg, P - 0.382 * rg, P, P + 0.382 * rg, P + 0.618 * rg, P + rg)  // S3..R3
+names = array.from("S3", "S2", "S1", "P", "R1", "R2", "R3")
+ema = ta.ema(close, emaLen)
+plot(ema, "9 EMA", color=#0c8fa8, linewidth=2)
+plot(array.get(lv, 0), "S3", color=color.new(color.gray, 40), style=plot.style_stepline)
+plot(array.get(lv, 1), "S2", color=color.new(color.gray, 40), style=plot.style_stepline)
+plot(array.get(lv, 2), "S1", color=color.new(color.gray, 40), style=plot.style_stepline)
+plot(array.get(lv, 3), "P",  color=color.new(color.gray, 20), style=plot.style_stepline)
+plot(array.get(lv, 4), "R1", color=color.new(color.gray, 40), style=plot.style_stepline)
+plot(array.get(lv, 5), "R2", color=color.new(color.gray, 40), style=plot.style_stepline)
+plot(array.get(lv, 6), "R3", color=color.new(color.gray, 40), style=plot.style_stepline)
+
+joint(c, e, l) => dir == "UP" ? (c > l and c > e) : (c < l and c < e)
+
+// relevant level: UP = highest level below close, DOWN = lowest level above close
+int idx = -1
+if dir == "UP"
+    for i = 6 to 0
+        if array.get(lv, i) < close
+            idx := i
+            break
+else
+    for i = 0 to 6
+        if array.get(lv, i) > close
+            idx := i
+            break
+lvl = idx >= 0 ? array.get(lv, idx) : na
+event = idx >= 0 and not na(ema[1]) and joint(close, ema, lvl) and not joint(close[1], ema[1], lvl)
+
+var int   state  = 0      // 0 waiting, 2 armed, 3 in position
+var float entry  = na
+var float target = na
+newDay = ta.change(time("D")) != 0
+if newDay and state == 2
+    state := 0
+
+if state == 2 and high >= entry
+    state := 3
+    label.new(bar_index, low, "BUY @" + str.tostring(math.max(entry, open), format.mintick), style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+
+if state == 3 and not na(target)
+    hit = dir == "UP" ? high >= target : low <= target
+    if hit
+        state := 0
+        label.new(bar_index, high, "NEXT_PIVOT_TARGET", style=label.style_label_down, color=color.purple, textcolor=color.white, size=size.small)
+
+if barstate.isconfirmed
+    if state == 3
+        emaExit = dir == "UP" ? close < ema : close > ema
+        if emaExit
+            state := 0
+            label.new(bar_index, high, "EMA_EXIT", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+    else if event
+        state := 2
+        entry := high + offset
+        nxt = dir == "UP" ? (idx < 6 ? array.get(lv, idx + 1) : na) : (idx > 0 ? array.get(lv, idx - 1) : na)
+        if dir == "UP" and not na(nxt) and nxt <= entry
+            nxt := na
+            for i = idx + 1 to 6
+                if array.get(lv, i) > entry
+                    nxt := array.get(lv, i)
+                    break
+        target := nxt
+        label.new(bar_index, high, (dir == "UP" ? "BO " : "BD ") + array.get(names, idx) + " → " + str.tostring(entry, format.mintick), style=label.style_label_down, color=color.blue, textcolor=color.white, size=size.tiny)
+
+plot(state == 2 ? entry : na, "Entry trigger", color=color.green, style=plot.style_linebr)
+plot(state == 3 ? target : na, "Target", color=color.purple, style=plot.style_linebr)
