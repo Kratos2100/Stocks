@@ -198,6 +198,84 @@ def cmd_select(args) -> None:
     print(json.dumps({k.value: v.to_dict() for k, v in res.items()}, indent=2, default=str))
 
 
+# ---------------------------------------------------------------- data fetch
+def _merge_save(df, out: str, keys: list[str]) -> None:
+    import pandas as pd
+    p = Path(out)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():  # build an archive over time instead of overwriting it
+        old = pd.read_csv(p)
+        for c in ("timestamp",):
+            if c in old.columns:
+                old[c] = pd.to_datetime(old[c])
+        for c in ("expiry", "date"):
+            if c in old.columns:
+                old[c] = pd.to_datetime(old[c]).dt.date
+        df = pd.concat([old, df], ignore_index=True).drop_duplicates(keys, keep="last")
+    df.to_csv(p, index=False)
+    print(f"wrote {len(df)} rows to {p}")
+
+
+def _d(s: str):
+    return datetime.strptime(s, "%Y-%m-%d").date()
+
+
+def _strikes(args):
+    if args.strikes:
+        return [float(x) for x in args.strikes.split(",")]
+    if getattr(args, "bhavcopy", None):
+        import pandas as pd
+        from .data.providers.nse import liquid_strikes
+        bhav = pd.read_csv(args.bhavcopy)
+        bhav["expiry"] = pd.to_datetime(bhav["expiry"]).dt.date
+        bhav["date"] = pd.to_datetime(bhav["date"]).dt.date
+        ks = liquid_strikes(bhav, args.underlying.upper(), _d(args.expiry), args.top)
+        print(f"most liquid {args.top} strikes from bhavcopy: {ks}")
+        return ks
+    return None
+
+
+OPT_KEYS = ["underlying", "expiry", "strike", "option_type", "timestamp"]
+
+
+def cmd_fetch(args) -> None:
+    from .data.providers import nse
+    src = args.source
+    if src == "bhavcopy":
+        df = nse.fetch_fo_bhavcopy_range(_d(args.start), _d(args.end), args.symbols.split(","))
+        _merge_save(df, args.out, ["underlying", "expiry", "strike", "option_type", "date"])
+    elif src == "chain":
+        df = nse.fetch_option_chain(args.symbol, _d(args.expiry) if args.expiry else None)
+        _merge_save(df, args.out, ["timestamp", "underlying", "expiry", "strike", "option_type"])
+    elif src == "record":
+        nse.ChainRecorder(args.symbols.split(","), args.out_dir, args.every).run()
+    elif src == "snapshots-to-candles":
+        import pandas as pd
+        df = nse.snapshots_to_candles(pd.read_csv(args.chains), args.timeframe)
+        _merge_save(df, args.out, OPT_KEYS)
+        print('backtest with --label "NSE_CHAIN_SNAPSHOTS (sampled LTP; high/low approximate)"')
+    else:
+        kw = dict(underlying=args.underlying.upper(), expiry=_d(args.expiry), start=_d(args.start), end=_d(args.end),
+                  strike_min=args.strike_min, strike_max=args.strike_max, strikes=_strikes(args))
+        if src == "upstox":
+            from .data.providers.upstox import UpstoxClient
+            client = UpstoxClient()
+            df = client.fetch_options(**kw)
+            if args.index_out:
+                _merge_save(client.index_candles(args.underlying, _d(args.start), _d(args.end)), args.index_out,
+                            ["underlying", "timestamp"])
+        elif src == "kite":
+            from .data.providers.kite import KiteSource, make_kite
+            df = KiteSource(make_kite()).fetch_options(**kw)
+        elif src == "dhan":
+            from .data.providers.dhan import DhanSource, make_dhan
+            df = DhanSource(make_dhan()).fetch_options(**kw)
+        else:
+            raise SystemExit(f"unknown source {src}")
+        _merge_save(df, args.out, OPT_KEYS)
+        print(f"backtest with: python -m options_mas.cli backtest --data {args.out} --label \"{src.upper()} 5m\"")
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog="options_mas")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -251,6 +329,43 @@ def main(argv=None) -> None:
     p.add_argument("--underlying", required=True)
     p.add_argument("--at", required=True)
     p.set_defaults(fn=cmd_select)
+
+    p = sub.add_parser("fetch", help="download real options data (NSE / Upstox / Kite / Dhan)")
+    fs = p.add_subparsers(dest="source", required=True)
+    f = fs.add_parser("bhavcopy", help="NSE F&O end-of-day bhavcopy (free, needs nselib)")
+    f.add_argument("--start", required=True)
+    f.add_argument("--end", required=True)
+    f.add_argument("--symbols", default="NIFTY,BANKNIFTY")
+    f.add_argument("--out", default="data/bhavcopy_fo.csv")
+    f = fs.add_parser("chain", help="one live NSE option-chain snapshot (free, needs nselib)")
+    f.add_argument("--symbol", default="NIFTY")
+    f.add_argument("--expiry")
+    f.add_argument("--out", default="data/chains.csv")
+    f = fs.add_parser("record", help="poll the live NSE chain during market hours")
+    f.add_argument("--symbols", default="NIFTY,BANKNIFTY")
+    f.add_argument("--every", type=int, default=30)
+    f.add_argument("--out-dir", default="data/recorded")
+    f = fs.add_parser("snapshots-to-candles", help="convert recorded chain snapshots into premium candles")
+    f.add_argument("--chains", required=True)
+    f.add_argument("--timeframe", type=int, default=5)
+    f.add_argument("--out", default="data/recorded/options_5m.csv")
+    for name, hlp in (("upstox", "Upstox 5-min candles, active + expired (UPSTOX_ACCESS_TOKEN)"),
+                      ("kite", "Zerodha Kite 5-min candles, listed contracts (KITE_API_KEY, KITE_ACCESS_TOKEN)"),
+                      ("dhan", "Dhan 5-min candles, listed contracts (DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)")):
+        f = fs.add_parser(name, help=hlp)
+        f.add_argument("--underlying", default="NIFTY")
+        f.add_argument("--expiry", required=True, help="YYYY-MM-DD")
+        f.add_argument("--start", required=True)
+        f.add_argument("--end", required=True)
+        f.add_argument("--strike-min", type=float)
+        f.add_argument("--strike-max", type=float)
+        f.add_argument("--strikes", help="comma separated explicit strikes")
+        f.add_argument("--bhavcopy", help="pick the most liquid strikes from a bhavcopy CSV")
+        f.add_argument("--top", type=int, default=8)
+        f.add_argument("--out", default=f"data/{name}_options_5m.csv")
+        if name == "upstox":
+            f.add_argument("--index-out", help="also save index candles (regime analytics only)")
+    p.set_defaults(fn=cmd_fetch)
 
     args = ap.parse_args(argv)
     args.fn(args)

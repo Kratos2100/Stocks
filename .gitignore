@@ -5,5 +5,5 @@ __pycache__/
 .venv/
 *.sqlite3
 *.db
-reports/
-data/
+/reports/
+/data/
