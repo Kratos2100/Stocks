@@ -75,6 +75,17 @@ python -m options_mas.cli fetch angelone --underlying NIFTY --expiry 2026-11-10 
     --out data/nifty_angel_5m.csv --index-out data/nifty_index_5m.csv
 ```
 
+Observed on the live API (checked 2026-11-03):
+
+* The historical API rate-limits bursts with HTTP 403 and the plain-text body
+  "Access denied because of exceeding access rate"; the client retries with
+  backoff. A three-expiry, ±1500-point download (378 contracts) took ~20 minutes.
+* 5-minute bars with no trades are omitted, so illiquid strikes have fewer
+  than 75 bars a day. The NIFTY index series was also missing the 15:15 and
+  15:20 bars on most days.
+* Expiries that settle today are still listed until the master refreshes, so
+  fetch each weekly on its expiry day at the latest.
+
 For live runs, `AngelOneFeed` (in `options_mas/data/providers/angelone.py`)
 implements `MarketDataFeed`: it streams ticks for the subscribed contracts
 into the same 5-minute bar builder and `TradingSystem` the backtester uses.
