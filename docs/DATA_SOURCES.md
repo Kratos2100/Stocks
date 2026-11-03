@@ -8,6 +8,7 @@ environment variables only. Never put tokens in config files or commit them.
 |---|---|---|---|---|---|
 | NSE F&O bhavcopy | `nselib` | free | no (end of day) | yes | pivots' previous-session H/L/C, contract universe, picking liquid strikes |
 | NSE live option chain | `nselib` | free | snapshots only | no | contract selection, building a free forward archive |
+| **Angel One SmartAPI** | `requests`, `websockets` | free SmartAPI app (key) + TOTP | yes | **no** (listed contracts only) | live feed + history of listed contracts; build an archive daily |
 | **Groww** | `requests` | Groww Trade API subscription + API key | yes, with OI | **yes** (backtesting API) | **backtesting**, if you trade on Groww |
 | **Upstox** | `requests` | free API app; the expired-instruments API may need a paid plan | yes, with OI | **yes** | **backtesting** (5-min history of expired weeklies) |
 | Zerodha Kite | `kiteconnect` | Kite Connect + historical add-on (paid) | yes, with OI | no | paper/live on Kite; build an archive daily |
@@ -40,6 +41,45 @@ moments a snapshot was taken, so they understate the true range. Volume is
 the growth of NSE's cumulative traded volume. Label such backtests
 `--label "NSE_CHAIN_SNAPSHOTS (sampled)"`. NSE's site is rate-limited and
 its terms of use apply, so keep `--every` at 30 seconds or more.
+
+## Angel One SmartAPI
+
+SmartAPI is free for Angel One clients and gives both 5-minute history and a
+live websocket feed. Its historical API only serves contracts in the
+**current** instrument master, so expired weeklies cannot be downloaded. You
+can backtest on contracts that are still listed (they trade for weeks before
+expiry) and grow the archive by fetching after every session. The adapter
+calls the REST paths and websocket protocol of the official `smartapi-python`
+SDK directly, without the SDK itself, because the SDK writes request headers
+(including the API key) to a log file on errors and disables TLS checks on
+its websocket.
+
+1. At smartapi.angelone.in, create an app to get an **API key**. Enable TOTP
+   for your Angel One account and keep the TOTP **secret** (the text behind
+   the QR code).
+2. Set the credentials as environment variables (never in files or chat):
+
+```bash
+export ANGEL_API_KEY=...  ANGEL_CLIENT_CODE=...  ANGEL_PIN=...  ANGEL_TOTP_SECRET=...
+```
+
+3. In a restricted network, allow `apiconnect.angelone.in`,
+   `margincalculator.angelone.in` (instrument master) and
+   `smartapisocket.angelone.in` (live feed).
+4. Check the response format once, then download a listed expiry:
+
+```bash
+python -m options_mas.cli fetch angelone-probe --underlying NIFTY --day 2026-11-02
+python -m options_mas.cli fetch angelone --underlying NIFTY --expiry 2026-11-10 \
+    --start 2026-10-20 --end 2026-11-03 --strike-min 25000 --strike-max 26200 \
+    --out data/nifty_angel_5m.csv --index-out data/nifty_index_5m.csv
+```
+
+For live runs, `AngelOneFeed` (in `options_mas/data/providers/angelone.py`)
+implements `MarketDataFeed`: it streams ticks for the subscribed contracts
+into the same 5-minute bar builder and `TradingSystem` the backtester uses.
+Live ticks are snapshots without bid/ask, so Agent 03 sees the labelled
+`ESTIMATED_TICK_RULE` delta.
 
 ## Groww
 
@@ -128,7 +168,7 @@ estimate everywhere, and by default it never opens trades. See
 
 ## Verification status
 
-The Groww, Upstox, Kite and Dhan adapters were written against each vendor's
+The Angel One, Groww, Upstox, Kite and Dhan adapters were written against each vendor's
 official Python SDK, which defines the method names, paths and parameters.
 Parsing is unit tested with fixture payloads shaped like the documented
 responses. They have **not** been run against the live APIs from this
@@ -136,6 +176,8 @@ repository's environment, which has no access to NSE or broker hosts. Before
 relying on the data, run one small fetch and inspect it. Two items in
 particular are unverified:
 
+* Angel One's candle and instrument-master payloads and the websocket
+  packet layout (taken from the SDK; use `fetch angelone-probe`)
 * Groww's payload bodies for expiries, contracts and candles (the SDK does
   not define them; use `fetch groww-probe`). **Live check, 2026-11-03:** the
   approval-key token flow worked (`/user/detail` returned 200), but

@@ -39,7 +39,7 @@ python -m options_mas.cli dashboard --synthetic               # http://127.0.0.1
 
 ## Documentation
 
-* [Getting real options data](docs/DATA_SOURCES.md): NSE (free), Groww, Upstox, Kite, Dhan downloaders
+* [Getting real options data](docs/DATA_SOURCES.md): NSE (free), Angel One SmartAPI, Groww, Upstox, Kite, Dhan downloaders
 * [Architecture](docs/ARCHITECTURE.md): components, data flow, orchestrator modes
 * [Strategies](docs/STRATEGIES.md): exact rules as implemented, configurable choices, caveats
 * [Signal protocol](docs/SIGNAL_PROTOCOL.md): the common JSON message schema

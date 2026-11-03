@@ -253,6 +253,9 @@ def cmd_fetch(args) -> None:
         from .data.providers.groww import GrowwClient
         res = GrowwClient().probe(args.underlying, _d(args.expiry), _d(args.day))
         print(json.dumps(res, indent=2, default=str))
+    elif src == "angelone-probe":
+        from .data.providers.angelone import AngelOneClient
+        print(json.dumps(AngelOneClient().probe(args.underlying, _d(args.day)), indent=2, default=str))
     elif src == "snapshots-to-candles":
         import pandas as pd
         df = nse.snapshots_to_candles(pd.read_csv(args.chains), args.timeframe)
@@ -274,6 +277,13 @@ def cmd_fetch(args) -> None:
         elif src == "groww":
             from .data.providers.groww import GrowwClient
             client = GrowwClient()
+            df = client.fetch_options(**kw)
+            if args.index_out:
+                _merge_save(client.index_candles(args.underlying, _d(args.start), _d(args.end)), args.index_out,
+                            ["underlying", "timestamp"])
+        elif src == "angelone":
+            from .data.providers.angelone import AngelOneClient
+            client = AngelOneClient()
             df = client.fetch_options(**kw)
             if args.index_out:
                 _merge_save(client.index_candles(args.underlying, _d(args.start), _d(args.end)), args.index_out,
@@ -341,7 +351,7 @@ def main(argv=None) -> None:
     p.add_argument("--at", required=True)
     p.set_defaults(fn=cmd_select)
 
-    p = sub.add_parser("fetch", help="download real options data (NSE / Upstox / Kite / Dhan)")
+    p = sub.add_parser("fetch", help="download real options data (NSE / Angel One / Groww / Upstox / Kite / Dhan)")
     fs = p.add_subparsers(dest="source", required=True)
     f = fs.add_parser("bhavcopy", help="NSE F&O end-of-day bhavcopy (free, needs nselib)")
     f.add_argument("--start", required=True)
@@ -364,7 +374,12 @@ def main(argv=None) -> None:
     f.add_argument("--underlying", default="NIFTY")
     f.add_argument("--expiry", required=True, help="YYYY-MM-DD")
     f.add_argument("--day", required=True, help="a trading day on which that contract traded")
-    for name, hlp in (("groww", "Groww 5-min candles, active + expired (GROWW_API_KEY + GROWW_API_SECRET/TOTP, "
+    f = fs.add_parser("angelone-probe", help="print raw Angel One SmartAPI responses for one small request")
+    f.add_argument("--underlying", default="NIFTY")
+    f.add_argument("--day", required=True, help="a recent trading day (YYYY-MM-DD)")
+    for name, hlp in (("angelone", "Angel One SmartAPI 5-min candles, listed contracts only (ANGEL_API_KEY, "
+                                   "ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET)"),
+                      ("groww", "Groww 5-min candles, active + expired (GROWW_API_KEY + GROWW_API_SECRET/TOTP, "
                                 "or GROWW_ACCESS_TOKEN)"),
                       ("upstox", "Upstox 5-min candles, active + expired (UPSTOX_ACCESS_TOKEN)"),
                       ("kite", "Zerodha Kite 5-min candles, listed contracts (KITE_API_KEY, KITE_ACCESS_TOKEN)"),
@@ -380,7 +395,7 @@ def main(argv=None) -> None:
         f.add_argument("--bhavcopy", help="pick the most liquid strikes from a bhavcopy CSV")
         f.add_argument("--top", type=int, default=8)
         f.add_argument("--out", default=f"data/{name}_options_5m.csv")
-        if name in ("upstox", "groww"):
+        if name in ("upstox", "groww", "angelone"):
             f.add_argument("--index-out", help="also save index candles (regime analytics only)")
     p.set_defaults(fn=cmd_fetch)
 
