@@ -35,6 +35,7 @@ python -m options_mas.cli walkforward --synthetic --agents A02 --grid agent02.em
 python -m options_mas.cli sensitivity --synthetic --param agent01.entry_offset --values 1,2,3
 python -m options_mas.cli paper --synthetic                   # tick-driven paper rehearsal
 python -m options_mas.cli dashboard --synthetic               # http://127.0.0.1:8000
+python -m options_mas.cli live --underlying NIFTY          # live Angel One ticks, paper fills (docs/DATA_SOURCES.md)
 ```
 
 ## Documentation

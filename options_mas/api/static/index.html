@@ -60,16 +60,20 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .scroll{overflow:auto;max-height:340px}
 .reason{white-space:normal;min-width:260px;color:var(--muted)}
 .note{font-size:12px;color:var(--warn)}
+.pill.ok{background:color-mix(in srgb,var(--up) 16%,transparent);color:var(--up);font-weight:600}
+.warnlist{display:grid;gap:4px} .warnlist div{font-size:12px;color:var(--warn)}
+[hidden]{display:none!important}
 </style>
 </head>
 <body>
 <header>
   <div class="row"><h1>Options Multi-Agent Monitor</h1><span class="pill" id="label">—</span><span class="pill" id="mode">—</span></div>
-  <div class="row"><span class="pill" id="clock">—</span>
+  <div class="row"><span class="pill" id="feed" hidden>—</span><span class="pill" id="clock">—</span>
     <button id="pause">Pause</button><button id="step">Step</button>
     <button class="danger" id="estop">Emergency stop</button></div>
 </header>
 <div class="wrap">
+  <div class="warnlist" id="warnings" hidden></div>
   <div class="strip" id="risk"></div>
   <div class="grid3" id="agents"></div>
   <div class="card">
@@ -89,6 +93,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
     <div class="card"><h2>Recent signals</h2><div class="sub">Every signal explains conditions satisfied / not satisfied</div>
       <div class="scroll"><table id="signals"></table></div></div>
     <div class="card"><h2>Open positions</h2><div class="sub">Live mark-to-market</div><div class="scroll"><table id="positions"></table></div>
+      <div id="quotesbox" hidden><h2 style="margin-top:14px">Live quotes</h2><div class="sub">Last traded price per subscribed contract</div><div class="scroll"><table id="quotes"></table></div></div>
       <h2 style="margin-top:14px">Pending approvals</h2><div class="sub">Manual approval mode only</div><div class="scroll"><table id="approvals"></table></div></div>
   </div>
   <div class="card"><h2>Completed trades</h2><div class="sub" id="perf">Net of modelled charges and slippage</div><div class="scroll"><table id="trades"></table></div></div>
@@ -136,7 +141,7 @@ function agentCard(a){
 async function refreshStatus(){
   const s = await j('/api/status');
   document.getElementById('label').textContent = s.data_label;
-  document.getElementById('label').className = 'pill' + (s.warnings && s.warnings.length ? ' warn':'');
+  document.getElementById('label').className = 'pill' + ((s.warnings||[]).some(w=>/SYNTHETIC/i.test(w)) ? ' warn':'');
   document.getElementById('mode').textContent = `exec: ${s.mode} · orchestrator: mode ${s.orchestrator_mode}`;
   document.getElementById('clock').textContent = (s.now||'—').replace('T',' ') + (s.done?' · finished':'');
   const r = s.risk||{};
@@ -157,6 +162,22 @@ async function refreshStatus(){
   if (sel.options.length !== keys.length){ sel.innerHTML = keys.map(k=>`<option>${esc(k)}</option>`).join(''); if(current && keys.includes(current)) sel.value=current; }
   if(!current && keys.length){ current = keys[0]; sel.value=current; }
   paused = s.paused; document.getElementById('pause').textContent = paused?'Resume':'Pause';
+  const live = !!s.live;
+  document.getElementById('pause').hidden = live; document.getElementById('step').hidden = live;
+  const w = [...(s.warnings||[])]; if (s.error) w.unshift('Feed stopped: '+s.error);
+  const wl = document.getElementById('warnings'); wl.hidden = !live || !w.length; wl.innerHTML = w.map(x=>`<div>${esc(x)}</div>`).join('');
+  const fp = document.getElementById('feed'); fp.hidden = !live;
+  if (live) {
+    const f = s.feed||{};
+    const age = f.seconds_since_last_tick;
+    fp.textContent = f.last_tick ? `Feed: ${f.stale?'no ticks for '+Math.round(age)+'s':'live'} · ${(f.ticks||0).toLocaleString('en-IN')} ticks · last ${f.last_tick.slice(11,19)}` : 'Feed: waiting for first tick';
+    fp.className = 'pill' + (f.stale ? ' warn' : ' ok');
+    document.getElementById('clock').textContent = 'IST ' + (s.clock||'').slice(11,19);
+    document.getElementById('quotesbox').hidden = false;
+    const q = Object.entries(f.ltp||{}).sort(([a],[b])=>a.localeCompare(b));
+    document.getElementById('quotes').innerHTML = '<tr><th>Contract</th><th>LTP</th><th>Time</th></tr>' +
+      (q.length ? q.map(([k,v])=>`<tr><td>${esc(k)}</td><td class="num">${fmt(v.price)}</td><td>${esc(String(v.ts).slice(11,19))}</td></tr>`).join('') : '<tr><td class="sub" colspan="3">No ticks yet</td></tr>');
+  }
 }
 window.approve = async (id,a)=>{ await fetch(`/api/approvals/${id}/${a}`,{method:'POST'}); refreshStatus(); };
 

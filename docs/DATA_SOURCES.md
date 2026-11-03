@@ -86,6 +86,26 @@ Observed on the live API (checked 2026-11-03):
 * Expiries that settle today are still listed until the master refreshes, so
   fetch each weekly on its expiry day at the latest.
 
+### Live monitor page
+
+```bash
+python -m options_mas.cli live --underlying NIFTY --strikes-each-side 5   # open http://127.0.0.1:8000
+```
+
+On start-up it logs in, picks the nearest listed expiry (the next one after
+15:30 on expiry day), finds ATM from the latest index candle, and subscribes
+to ATM ± N strikes, CE and PE. Each contract is warmed up with the previous
+`warmup_sessions` sessions plus today's completed bars from the historical
+API, then the websocket ticks are built into 5-minute bars and fed to A01–A03.
+Fills are simulated (`SimulatedBroker`, mode `paper`); no order ever reaches
+Angel One. The page shows a feed pill (tick count, time of the last tick, red
+when no tick has arrived for 30 s), last traded prices, agent states, signals,
+paper positions and trades, and the same candle chart as the replay
+dashboard. Quotes outside 09:15–15:30 are shown but never built into bars.
+Bars close on the wall clock even when a contract stops trading. Starting
+mid-session, the first bar is partial. Options: `--expiry`, `--agents`,
+`--db` (SQLite event log, default `data/live.sqlite`), `--host`, `--port`.
+
 For live runs, `AngelOneFeed` (in `options_mas/data/providers/angelone.py`)
 implements `MarketDataFeed`: it streams ticks for the subscribed contracts
 into the same 5-minute bar builder and `TradingSystem` the backtester uses.

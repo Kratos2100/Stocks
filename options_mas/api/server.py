@@ -34,7 +34,15 @@ def _epoch(ts: datetime) -> int:
     return int((ts - datetime(1970, 1, 1)).total_seconds())
 
 
-class ReplayRuntime:
+class RuntimeViews:
+    """Read-only views shared by the replay and live runtimes (needs ``system`` and ``cfg``)."""
+    live = False
+
+    def chart(self, key: str) -> dict[str, Any]:
+        return _chart(self.system, self.cfg, key)
+
+
+class ReplayRuntime(RuntimeViews):
     def __init__(self, cfg: AppConfig, dataset: BacktestDataset, enabled_agents: Optional[list[str]] = None,
                  speed: float = 0.25, store: Optional[Store] = None):
         self.cfg = cfg
@@ -96,56 +104,55 @@ class ReplayRuntime:
         return {"now": self.now.isoformat() if self.now else None, "done": self.done, "paused": self.paused,
                 "data_label": self.ds.label, "warnings": warnings, **snap}
 
-    def chart(self, key: str) -> dict[str, Any]:
-        s = self.system
-        if s is None or key not in s.contracts:
-            raise KeyError(key)
-        agents = [a for a in s.agents.values() if a.has_contract(key)]
-        if not agents:
-            raise KeyError(key)
-        base = agents[0].contexts[key]
-        candles = base.candles
-        times = [_epoch(c.ts) for c in candles]
-        out: dict[str, Any] = {
-            "contract": s.contracts[key].to_dict(),
-            "candles": [{"time": t, "open": c.open, "high": c.high, "low": c.low, "close": c.close}
-                        for t, c in zip(times, candles)],
-            "lines": {}, "delta": [], "markers": [], "pivots": None,
-        }
+def _chart(s, cfg: AppConfig, key: str) -> dict[str, Any]:
+    if s is None or key not in s.contracts:
+        raise KeyError(key)
+    agents = [a for a in s.agents.values() if a.has_contract(key)]
+    if not agents:
+        raise KeyError(key)
+    base = agents[0].contexts[key]
+    candles = base.candles
+    times = [_epoch(c.ts) for c in candles]
+    out: dict[str, Any] = {
+        "contract": s.contracts[key].to_dict(),
+        "candles": [{"time": t, "open": c.open, "high": c.high, "low": c.low, "close": c.close}
+                    for t, c in zip(times, candles)],
+        "lines": {}, "delta": [], "markers": [], "pivots": None,
+    }
 
-        def line(values):
-            return [{"time": t, "value": round(v, 4)} for t, v in zip(times, values) if v is not None]
+    def line(values):
+        return [{"time": t, "value": round(v, 4)} for t, v in zip(times, values) if v is not None]
 
-        tf = self.cfg.session.timeframe_min
-        for a in agents:
-            ctx = a.contexts[key]
-            ser = ctx.series
-            n = len(times)
-            if "ema50" in ser:
-                out["lines"]["ema50"] = line(ser["ema50"][-n:])
-                out["lines"]["vwap"] = line(ser["vwap"][-n:])
-            if "ema9" in ser:
-                out["lines"]["ema9"] = line(ser["ema9"][-n:])
-                piv = ser.get("pivots", [])[-n:]
-                lv: dict[str, list] = {}
-                for t, p in zip(times, piv):
-                    if p:
-                        for name, val in p.items():
-                            lv.setdefault(name, []).append({"time": t, "value": round(val, 2)})
-                out["pivots"] = lv
-            if "delta" in ser:
-                src = ser.get("delta_source", [])[-n:]
-                out["delta"] = [{"time": t, "value": round(v, 2), "source": sv}
-                                for t, v, sv in zip(times, ser["delta"][-n:], src) if v is not None]
-                out["delta_estimated"] = bool(src and src[-1] not in ("BID_ASK_PROVIDER", "BID_ASK_QUOTE_RULE"))
-                out["delta_source"] = src[-1] if src else None
-            first = candles[0].ts if candles else None
-            for m in ctx.markers:
-                ts = a._bar_start(datetime.fromisoformat(m["ts"]))
-                if first and ts >= first:
-                    out["markers"].append({**m, "time": _epoch(ts)})
-        out["markers"].sort(key=lambda m: m["time"])
-        return out
+    tf = cfg.session.timeframe_min
+    for a in agents:
+        ctx = a.contexts[key]
+        ser = ctx.series
+        n = len(times)
+        if "ema50" in ser:
+            out["lines"]["ema50"] = line(ser["ema50"][-n:])
+            out["lines"]["vwap"] = line(ser["vwap"][-n:])
+        if "ema9" in ser:
+            out["lines"]["ema9"] = line(ser["ema9"][-n:])
+            piv = ser.get("pivots", [])[-n:]
+            lv: dict[str, list] = {}
+            for t, p in zip(times, piv):
+                if p:
+                    for name, val in p.items():
+                        lv.setdefault(name, []).append({"time": t, "value": round(val, 2)})
+            out["pivots"] = lv
+        if "delta" in ser:
+            src = ser.get("delta_source", [])[-n:]
+            out["delta"] = [{"time": t, "value": round(v, 2), "source": sv}
+                            for t, v, sv in zip(times, ser["delta"][-n:], src) if v is not None]
+            out["delta_estimated"] = bool(src and src[-1] not in ("BID_ASK_PROVIDER", "BID_ASK_QUOTE_RULE"))
+            out["delta_source"] = src[-1] if src else None
+        first = candles[0].ts if candles else None
+        for m in ctx.markers:
+            ts = a._bar_start(datetime.fromisoformat(m["ts"]))
+            if first and ts >= first:
+                out["markers"].append({**m, "time": _epoch(ts)})
+    out["markers"].sort(key=lambda m: m["time"])
+    return out
 
 
 def create_app(runtime: ReplayRuntime, autostart: bool = True) -> FastAPI:
@@ -237,6 +244,8 @@ def create_app(runtime: ReplayRuntime, autostart: bool = True) -> FastAPI:
 
     @app.post("/api/control/{action}")
     def control(action: str):
+        if runtime.live:
+            raise HTTPException(400, "pause/step are replay controls; a live feed cannot be paused")
         if action == "pause":
             runtime.paused = True
         elif action == "resume":

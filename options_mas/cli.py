@@ -186,6 +186,20 @@ def cmd_dashboard(args) -> None:
     uvicorn.run(create_app(rt), host=args.host, port=args.port)
 
 
+def cmd_live(args) -> None:
+    import uvicorn
+    from .api.live_runtime import build_angelone_runtime
+    from .api.server import create_app
+    from .storage import Store
+    cfg = _cfg(args)
+    if args.db != ":memory:":
+        Path(args.db).parent.mkdir(parents=True, exist_ok=True)
+    rt = build_angelone_runtime(cfg, args.underlying, _d(args.expiry) if args.expiry else None,
+                                args.strikes_each_side, _agents(args), store=Store(args.db, "live"))
+    print(f"{rt.ds.label}: {len(rt.system.contracts)} contracts. Open http://{args.host}:{args.port}")
+    uvicorn.run(create_app(rt), host=args.host, port=args.port)
+
+
 def cmd_select(args) -> None:
     import pandas as pd
     from .contract_selection import ContractSelector
@@ -335,6 +349,17 @@ def main(argv=None) -> None:
     p.add_argument("--max-contracts", type=int, default=6)
     p.add_argument("--db", default="options_mas.sqlite3")
     p.set_defaults(fn=cmd_paper)
+
+    p = sub.add_parser("live", help="live monitor on Angel One ticks (paper fills only, no orders)")
+    p.add_argument("--config", help="TOML config file")
+    p.add_argument("--underlying", default="NIFTY", choices=["NIFTY", "BANKNIFTY"])
+    p.add_argument("--expiry", help="YYYY-MM-DD (default: nearest listed expiry)")
+    p.add_argument("--strikes-each-side", type=int, default=5, help="strikes above and below ATM, CE and PE each")
+    p.add_argument("--agents", help="comma-separated agent ids (default: enabled agents)")
+    p.add_argument("--db", default="data/live.sqlite")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    p.set_defaults(fn=cmd_live)
 
     p = sub.add_parser("dashboard")
     _common(p)

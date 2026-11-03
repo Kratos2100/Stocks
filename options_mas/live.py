@@ -147,6 +147,11 @@ class StreamingRunner:
         if last_ts is not None:
             self.system.end_session(last_ts)
 
+    def close_due(self, now: datetime) -> None:
+        """Close bars whose window ended by wall-clock ``now`` even if no later
+        tick has arrived (quiet contracts, the last bar of the session)."""
+        self._close(self.builder.close_due(now))
+
     def _close(self, items: list[tuple[str, Candle]]) -> None:
         if items:
             self.system.on_candles_closed(items)
